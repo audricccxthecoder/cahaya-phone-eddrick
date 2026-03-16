@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -63,13 +64,13 @@ async function initDatabase() {
   }
 }
 
-// Health check endpoint
+// Serve static frontend files
+app.use('/customer', express.static(path.join(__dirname, '../customer')));
+app.use('/admin', express.static(path.join(__dirname, '../admin')));
+
+// Health check + redirect ke customer form
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    message: 'Cahaya Phone CRM API',
-    timestamp: new Date().toISOString()
-  });
+  res.redirect('/customer');
 });
 
 // API Routes (dari controllers)
