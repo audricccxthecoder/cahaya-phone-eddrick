@@ -411,34 +411,51 @@ exports.exportContacts = async (req, res) => {
     try {
         console.log('📥 Export contacts requested');
 
+        // ?format=simple → Name + Phone only (for phone contact import)
+        // ?format=full (default) → all columns
+        const format = req.query.format || 'full';
+
         const { rows: customers } = await db.query(
             `SELECT nama_lengkap, whatsapp, nama_sales, merk_unit, tipe_unit,
-                    source, status, created_at
+                    source, status, opted_in, created_at
              FROM customers ORDER BY created_at DESC`
         );
 
-        console.log(`📥 Export: found ${customers.length} customers`);
+        console.log(`📥 Export: found ${customers.length} customers (format=${format})`);
 
-        // Build CSV
-        const header = 'Nama,Nomor WhatsApp,Sales,Merk,Tipe,Source,Status,Tanggal Daftar\n';
         const esc = v => `"${String(v || '').replace(/"/g, '""')}"`;
-        const csvRows = customers.map(c => {
-            const phone = sanitizePhone(c.whatsapp);
-            const date = c.created_at ? new Date(c.created_at).toLocaleDateString('id-ID') : '';
-            return [
-                esc(c.nama_lengkap),
-                esc(phone),
-                esc(c.nama_sales),
-                esc(c.merk_unit),
-                esc(c.tipe_unit),
-                esc(c.source),
-                esc(c.status),
-                esc(date)
-            ].join(',');
-        }).join('\n');
+        let header, csvRows;
+
+        if (format === 'simple') {
+            // Simple format: Name, Phone — compatible with phone contact import
+            header = 'Name,Phone\n';
+            csvRows = customers.map(c => {
+                const phone = sanitizePhone(c.whatsapp);
+                return [esc(c.nama_lengkap), esc(phone)].join(',');
+            }).join('\n');
+        } else {
+            // Full format: all columns
+            header = 'Nama,Nomor WhatsApp,Sales,Merk,Tipe,Source,Status,Opted In,Tanggal Daftar\n';
+            csvRows = customers.map(c => {
+                const phone = sanitizePhone(c.whatsapp);
+                const date = c.created_at ? new Date(c.created_at).toLocaleDateString('id-ID') : '';
+                return [
+                    esc(c.nama_lengkap),
+                    esc(phone),
+                    esc(c.nama_sales),
+                    esc(c.merk_unit),
+                    esc(c.tipe_unit),
+                    esc(c.source),
+                    esc(c.status),
+                    c.opted_in ? 'Ya' : 'Tidak',
+                    esc(date)
+                ].join(',');
+            }).join('\n');
+        }
 
         const csv = header + csvRows;
-        const filename = `customers_${new Date().toISOString().slice(0,10)}.csv`;
+        const suffix = format === 'simple' ? 'contacts' : 'customers';
+        const filename = `${suffix}_${new Date().toISOString().slice(0,10)}.csv`;
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

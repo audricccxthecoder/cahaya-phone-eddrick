@@ -1125,9 +1125,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // EXPORT CONTACTS
     // ============================================
 
-    document.getElementById('exportBtn').addEventListener('click', async () => {
+    async function doExport(format) {
         try {
-            const res = await fetch(`${API_URL}/admin/customers/export`, {
+            const res = await fetch(`${API_URL}/admin/customers/export?format=${format}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
 
@@ -1148,15 +1148,19 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             const today = new Date().toISOString().slice(0, 10);
+            const prefix = format === 'simple' ? 'contacts' : 'customers';
             link.href = url;
-            link.download = `customers_${today}.csv`;
+            link.download = `${prefix}_${today}.csv`;
             link.click();
             URL.revokeObjectURL(url);
         } catch (e) {
             console.error('Export error:', e);
             alert('Gagal export. Pastikan koneksi ke server OK.');
         }
-    });
+    }
+
+    document.getElementById('exportBtn').addEventListener('click', () => doExport('full'));
+    document.getElementById('exportSimpleBtn').addEventListener('click', () => doExport('simple'));
 
     // ============================================
     // BROADCAST

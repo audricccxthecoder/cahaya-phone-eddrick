@@ -16,7 +16,7 @@ exports.submitForm = async (req, res) => {
         const {
             nama, nama_lengkap, email, whatsapp, alamat, kota,
             nama_sales, merk_unit, tipe_unit, harga, qty,
-            tanggal_lahir, metode_pembayaran, tahu_dari
+            tanggal_lahir, metode_pembayaran, tahu_dari, opted_in
         } = req.body;
 
         const finalName = nama || nama_lengkap;
@@ -68,11 +68,14 @@ exports.submitForm = async (req, res) => {
 
         console.log(`🧭 Determined source from tahu_dari='${tahu_dari}' -> source='${source}'`);
 
+        // opted_in defaults to true if not explicitly set to false
+        const optedIn = opted_in !== false;
+
         const { rows } = await db.query(
             `INSERT INTO customers (
                 nama_lengkap, nama_sales, merk_unit, tipe_unit, harga, qty,
-                tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'New')
+                tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status, opted_in
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'New', $13)
             RETURNING id`,
             [
                 finalName,
@@ -86,7 +89,8 @@ exports.submitForm = async (req, res) => {
                 cleanPhone,
                 metode_pembayaran || null,
                 tahu_dari || null,
-                source
+                source,
+                optedIn
             ]
         );
 
