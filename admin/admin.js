@@ -1162,6 +1162,33 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     document.getElementById('exportBtn').addEventListener('click', () => doExport('full'));
     document.getElementById('exportSimpleBtn').addEventListener('click', () => doExport('simple'));
 
+    // Export vCard (.vcf) — direct phone contact import
+    document.getElementById('exportVcfBtn').addEventListener('click', async () => {
+        try {
+            const res = await fetch(`${API_URL}/admin/customers/export/vcf`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                alert(err && err.message ? err.message : 'Gagal export vCard (status ' + res.status + ')');
+                return;
+            }
+
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            const today = new Date().toISOString().slice(0, 10);
+            link.href = url;
+            link.download = `cahaya_phone_contacts_${today}.vcf`;
+            link.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            console.error('Export vCard error:', e);
+            alert('Gagal export vCard. Pastikan koneksi ke server OK.');
+        }
+    });
+
     // ============================================
     // BROADCAST
     // ============================================

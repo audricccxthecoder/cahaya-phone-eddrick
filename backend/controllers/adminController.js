@@ -406,13 +406,13 @@ exports.validateResetToken = async (req, res) => {
 /**
  * Export all customers as CSV
  * GET /api/admin/customers/export
+ * ?format=full (default) → all columns CSV
+ * ?format=simple → Name + Phone CSV
  */
 exports.exportContacts = async (req, res) => {
     try {
         console.log('📥 Export contacts requested');
 
-        // ?format=simple → Name + Phone only (for phone contact import)
-        // ?format=full (default) → all columns
         const format = req.query.format || 'full';
 
         const { rows: customers } = await db.query(
@@ -427,14 +427,12 @@ exports.exportContacts = async (req, res) => {
         let header, csvRows;
 
         if (format === 'simple') {
-            // Simple format: Name, Phone — compatible with phone contact import
             header = 'Name,Phone\n';
             csvRows = customers.map(c => {
                 const phone = sanitizePhone(c.whatsapp);
                 return [esc(c.nama_lengkap), esc(phone)].join(',');
             }).join('\n');
         } else {
-            // Full format: all columns
             header = 'Nama,Nomor WhatsApp,Sales,Merk,Tipe,Source,Status,Opted In,Tanggal Daftar\n';
             csvRows = customers.map(c => {
                 const phone = sanitizePhone(c.whatsapp);
@@ -459,12 +457,54 @@ exports.exportContacts = async (req, res) => {
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        // BOM for Excel compatibility
         res.send('\uFEFF' + csv);
 
     } catch (error) {
         console.error('❌ Export contacts error:', error.message, error.stack);
         res.status(500).json({ success: false, message: 'Gagal export data: ' + error.message });
+    }
+};
+
+/**
+ * Export all customers as vCard (.vcf) — direct phone contact import
+ * GET /api/admin/customers/export/vcf
+ * Tap the .vcf file on phone → all contacts auto-saved
+ */
+exports.exportVCard = async (req, res) => {
+    try {
+        console.log('📥 Export vCard requested');
+
+        const { rows: customers } = await db.query(
+            `SELECT nama_lengkap, whatsapp FROM customers ORDER BY created_at DESC`
+        );
+
+        console.log(`📥 Export vCard: found ${customers.length} customers`);
+
+        // Build vCard 3.0 format — universally supported on iOS & Android
+        const vcards = customers.map(c => {
+            const phone = sanitizePhone(c.whatsapp);
+            const name = String(c.nama_lengkap || '').trim();
+            // Escape special vCard characters
+            const escapedName = name.replace(/[;,\\]/g, m => '\\' + m);
+            return [
+                'BEGIN:VCARD',
+                'VERSION:3.0',
+                `FN:${escapedName}`,
+                `TEL;TYPE=CELL:+${phone}`,
+                `NOTE:Customer Cahaya Phone`,
+                'END:VCARD'
+            ].join('\r\n');
+        }).join('\r\n');
+
+        const filename = `cahaya_phone_contacts_${new Date().toISOString().slice(0,10)}.vcf`;
+
+        res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(vcards);
+
+    } catch (error) {
+        console.error('❌ Export vCard error:', error.message, error.stack);
+        res.status(500).json({ success: false, message: 'Gagal export vCard: ' + error.message });
     }
 };
 
