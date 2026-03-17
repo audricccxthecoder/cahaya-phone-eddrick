@@ -409,32 +409,35 @@ exports.validateResetToken = async (req, res) => {
  */
 exports.exportContacts = async (req, res) => {
     try {
+        console.log('📥 Export contacts requested');
+
         const { rows: customers } = await db.query(
             `SELECT nama_lengkap, whatsapp, nama_sales, merk_unit, tipe_unit,
                     source, status, created_at
              FROM customers ORDER BY created_at DESC`
         );
 
+        console.log(`📥 Export: found ${customers.length} customers`);
+
         // Build CSV
         const header = 'Nama,Nomor WhatsApp,Sales,Merk,Tipe,Source,Status,Tanggal Daftar\n';
-        const rows = customers.map(c => {
+        const esc = v => `"${String(v || '').replace(/"/g, '""')}"`;
+        const csvRows = customers.map(c => {
             const phone = sanitizePhone(c.whatsapp);
-            const date = new Date(c.created_at).toLocaleDateString('id-ID');
-            // Escape fields that might contain commas
-            const esc = v => `"${String(v || '').replace(/"/g, '""')}"`;
+            const date = c.created_at ? new Date(c.created_at).toLocaleDateString('id-ID') : '';
             return [
                 esc(c.nama_lengkap),
                 esc(phone),
-                esc(c.nama_sales || ''),
-                esc(c.merk_unit || ''),
-                esc(c.tipe_unit || ''),
+                esc(c.nama_sales),
+                esc(c.merk_unit),
+                esc(c.tipe_unit),
                 esc(c.source),
                 esc(c.status),
                 esc(date)
             ].join(',');
         }).join('\n');
 
-        const csv = header + rows;
+        const csv = header + csvRows;
         const filename = `customers_${new Date().toISOString().slice(0,10)}.csv`;
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -443,8 +446,8 @@ exports.exportContacts = async (req, res) => {
         res.send('\uFEFF' + csv);
 
     } catch (error) {
-        console.error('❌ Export contacts error:', error);
-        res.status(500).json({ success: false, message: 'Gagal export data' });
+        console.error('❌ Export contacts error:', error.message, error.stack);
+        res.status(500).json({ success: false, message: 'Gagal export data: ' + error.message });
     }
 };
 

@@ -1125,15 +1125,26 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // EXPORT CONTACTS
     // ============================================
 
-    document.getElementById('exportBtn').addEventListener('click', () => {
-        const a = document.createElement('a');
-        a.href = `${API_URL}/admin/customers/export`;
-        // Pass token via URL not possible for download links — use fetch instead
-        fetch(`${API_URL}/admin/customers/export`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        })
-        .then(res => res.blob())
-        .then(blob => {
+    document.getElementById('exportBtn').addEventListener('click', async () => {
+        try {
+            const res = await fetch(`${API_URL}/admin/customers/export`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                alert(err && err.message ? err.message : 'Gagal export CSV (status ' + res.status + ')');
+                return;
+            }
+
+            const contentType = res.headers.get('Content-Type') || '';
+            if (contentType.includes('application/json')) {
+                const err = await res.json();
+                alert(err.message || 'Gagal export CSV');
+                return;
+            }
+
+            const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             const today = new Date().toISOString().slice(0, 10);
@@ -1141,8 +1152,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             link.download = `customers_${today}.csv`;
             link.click();
             URL.revokeObjectURL(url);
-        })
-        .catch(() => alert('Gagal export. Pastikan koneksi ke server OK.'));
+        } catch (e) {
+            console.error('Export error:', e);
+            alert('Gagal export. Pastikan koneksi ke server OK.');
+        }
     });
 
     // ============================================

@@ -50,14 +50,12 @@ router.get('/admin/stats', authMiddleware, adminController.getStats);
 
 // Customers
 router.get('/admin/customers', authMiddleware, adminController.getCustomers);
+router.get('/admin/customers/export', authMiddleware, adminController.exportContacts);
 router.get('/admin/customers/:id', authMiddleware, adminController.getCustomerById);
 
 // Messages
 router.get('/admin/messages', authMiddleware, adminController.getMessages);
 router.get('/admin/messages/:customerId', authMiddleware, adminController.getMessagesByCustomer);
-
-// Export contacts (CSV)
-router.get('/admin/customers/export', authMiddleware, adminController.exportContacts);
 
 // Broadcast
 router.post('/admin/broadcast/start', authMiddleware, adminController.startBroadcast);
