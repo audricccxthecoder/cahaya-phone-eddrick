@@ -693,14 +693,18 @@ html, body {
     }
 
     .nav {
-        flex-wrap: wrap;
-        padding: 0 10px;
+        flex-wrap: nowrap;
+        padding: 0 5px;
         gap: 0;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
     }
 
     .nav-item {
-        padding: 10px 14px;
-        font-size: 13px;
+        padding: 10px 12px;
+        font-size: 12px;
+        white-space: nowrap;
+        flex-shrink: 0;
     }
 
     .main {
@@ -754,12 +758,11 @@ html, body {
 
     table {
         font-size: 12px;
-        min-width: 500px;
+        min-width: 600px;
     }
 
     th, td {
         padding: 8px 6px;
-        white-space: nowrap;
     }
 
     .card-header {
