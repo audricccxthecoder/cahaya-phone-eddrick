@@ -1302,6 +1302,33 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         broadcastStopBtn.disabled = !status.running && status.queued === 0;
     }
 
+    let broadcastProcessing = false; // flag to prevent double-processing
+
+    // Process broadcast in batches (frontend drives the loop)
+    async function processBroadcastLoop() {
+        if (broadcastProcessing) return;
+        broadcastProcessing = true;
+        broadcastStartBtn.disabled = true;
+
+        while (broadcastProcessing) {
+            const res = await apiCall('/admin/broadcast/process', { method: 'POST', body: '{}' });
+            if (!res || !res.success) {
+                broadcastProcessing = false;
+                break;
+            }
+            renderBroadcastStatus(res.status);
+
+            // Stop loop if broadcast is done or paused
+            if (!res.status.running || res.status.paused) {
+                broadcastProcessing = false;
+                break;
+            }
+
+            // Small delay before next batch to avoid hammering the API
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+
     broadcastStartBtn.addEventListener('click', async () => {
         const message = document.getElementById('broadcastMessage').value.trim();
         const source = document.getElementById('broadcastSource').value;
@@ -1324,14 +1351,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             renderBroadcastStatus(res.status);
             broadcastPauseBtn.disabled = false;
             broadcastStopBtn.disabled = false;
-            // Auto-refresh status every 4 seconds while running
-            const interval = setInterval(async () => {
-                const s = await apiCall('/admin/broadcast/status');
-                if (s && s.status) {
-                    renderBroadcastStatus(s.status);
-                    if (!s.status.running) clearInterval(interval);
-                }
-            }, 4000);
+            // Start processing loop
+            processBroadcastLoop();
         } else {
             alert('Gagal memulai broadcast: ' + (res?.message || 'Unknown error'));
             broadcastStartBtn.disabled = false;
@@ -1339,24 +1360,35 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     });
 
     broadcastPauseBtn.addEventListener('click', async () => {
+        broadcastProcessing = false; // stop the loop
         const res = await apiCall('/admin/broadcast/pause', { method: 'POST', body: '{}' });
-        if (res) renderBroadcastStatus(res.status);
+        if (res) {
+            const s = await apiCall('/admin/broadcast/status');
+            if (s && s.status) renderBroadcastStatus(s.status);
+        }
     });
 
     broadcastResumeBtn.addEventListener('click', async () => {
         const res = await apiCall('/admin/broadcast/resume', { method: 'POST', body: '{}' });
-        if (res) renderBroadcastStatus(res.status);
+        if (res) {
+            // Restart the processing loop
+            processBroadcastLoop();
+        }
     });
 
     broadcastStopBtn.addEventListener('click', async () => {
         if (!confirm('Yakin mau menghentikan broadcast?')) return;
+        broadcastProcessing = false; // stop the loop
         const res = await apiCall('/admin/broadcast/stop', { method: 'POST', body: '{}' });
-        if (res) renderBroadcastStatus(res.status);
+        if (res) {
+            const s = await apiCall('/admin/broadcast/status');
+            if (s && s.status) renderBroadcastStatus(s.status);
+        }
     });
 
     document.getElementById('refreshStatusBtn').addEventListener('click', async () => {
         const res = await apiCall('/admin/broadcast/status');
-        if (res) renderBroadcastStatus(res.status);
+        if (res && res.status) renderBroadcastStatus(res.status);
     });
 
     // ============================================

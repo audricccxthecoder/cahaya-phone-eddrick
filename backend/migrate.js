@@ -97,6 +97,39 @@ async function migrate() {
     await client.query(`UPDATE customers SET status = 'New' WHERE status NOT IN ('New','Contacted','Follow Up','Completed','Inactive')`);
     console.log('✅ Status values migrated');
 
+    // Broadcast tables (DB-backed queue for serverless)
+    console.log('Creating table: broadcast_jobs...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS broadcast_jobs (
+        id SERIAL PRIMARY KEY,
+        message TEXT NOT NULL,
+        source_filter VARCHAR(50),
+        status VARCHAR(20) DEFAULT 'running',
+        total INT DEFAULT 0,
+        sent INT DEFAULT 0,
+        failed INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Table broadcast_jobs created/verified');
+
+    console.log('Creating table: broadcast_recipients...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS broadcast_recipients (
+        id SERIAL PRIMARY KEY,
+        job_id INT NOT NULL REFERENCES broadcast_jobs(id) ON DELETE CASCADE,
+        customer_id INT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+        customer_name VARCHAR(100),
+        customer_phone VARCHAR(20),
+        status VARCHAR(20) DEFAULT 'pending',
+        error TEXT,
+        sent_at TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_br_job ON broadcast_recipients (job_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_br_status ON broadcast_recipients (job_id, status)`);
+    console.log('✅ Table broadcast_recipients created/verified');
+
     // Buat view statistik
     console.log('Creating view: customer_stats...');
     await client.query(`DROP VIEW IF EXISTS customer_stats`);

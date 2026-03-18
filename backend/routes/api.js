@@ -61,6 +61,7 @@ router.get('/admin/messages/:customerId', authMiddleware, adminController.getMes
 
 // Broadcast
 router.post('/admin/broadcast/start', authMiddleware, adminController.startBroadcast);
+router.post('/admin/broadcast/process', authMiddleware, adminController.processBroadcast);
 router.post('/admin/broadcast/stop', authMiddleware, adminController.stopBroadcast);
 router.post('/admin/broadcast/pause', authMiddleware, adminController.pauseBroadcast);
 router.post('/admin/broadcast/resume', authMiddleware, adminController.resumeBroadcast);

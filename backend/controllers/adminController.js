@@ -577,7 +577,7 @@ exports.exportVCard = async (req, res) => {
 };
 
 /**
- * Start broadcast
+ * Start broadcast (DB-backed, serverless-safe)
  * POST /api/admin/broadcast/start
  * Body: { message, source_filter? }
  */
@@ -589,13 +589,14 @@ exports.startBroadcast = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Pesan broadcast tidak boleh kosong' });
         }
 
-        // Check if broadcast already running
-        const currentStatus = whatsappService.getBroadcastStatus();
-        if (currentStatus.running && !currentStatus.paused) {
+        // Check if there's already an active broadcast
+        const { rows: active } = await db.query(
+            `SELECT id FROM broadcast_jobs WHERE status = 'running' LIMIT 1`
+        );
+        if (active.length > 0) {
             return res.status(409).json({
                 success: false,
-                message: 'Broadcast sedang berjalan. Stop dulu sebelum memulai baru.',
-                status: currentStatus
+                message: 'Broadcast sedang berjalan. Stop dulu sebelum memulai baru.'
             });
         }
 
@@ -603,7 +604,7 @@ exports.startBroadcast = async (req, res) => {
         let query = `SELECT id, nama_lengkap, whatsapp FROM customers WHERE opted_in IS NOT FALSE`;
         const params = [];
         if (source_filter) {
-            query += ` AND source = $1`;
+            query += ` AND source = $${params.length + 1}`;
             params.push(source_filter);
         }
         query += ` ORDER BY created_at ASC`;
@@ -614,27 +615,29 @@ exports.startBroadcast = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Tidak ada customer opted-in untuk dibroadcast' });
         }
 
-        // Log message delivery to DB + auto-advance status
-        const onLog = async (customerId, msg, deliveryStatus) => {
-            await db.query(
-                `INSERT INTO messages (customer_id, direction, message) VALUES ($1, $2, $3)`,
-                [customerId, 'out', `[BROADCAST][${deliveryStatus.toUpperCase()}] ${msg}`]
-            );
-            // Auto-advance: New → Contacted on successful broadcast
-            if (deliveryStatus === 'sent') {
-                await db.query(
-                    `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
-                    [customerId]
-                );
-            }
-        };
+        // Create broadcast job
+        const { rows: [job] } = await db.query(
+            `INSERT INTO broadcast_jobs (message, source_filter, status, total) VALUES ($1, $2, 'running', $3) RETURNING id`,
+            [message.trim(), source_filter || null, customers.length]
+        );
 
-        const status = whatsappService.startBroadcast(customers, message, onLog);
+        // Insert all recipients
+        const values = customers.map((c, i) => {
+            const offset = i * 4;
+            return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4})`;
+        }).join(', ');
+        const recipientParams = customers.flatMap(c => [job.id, c.id, c.nama_lengkap, sanitizePhone(c.whatsapp)]);
+
+        await db.query(
+            `INSERT INTO broadcast_recipients (job_id, customer_id, customer_name, customer_phone) VALUES ${values}`,
+            recipientParams
+        );
 
         res.json({
             success: true,
             message: `Broadcast dimulai untuk ${customers.length} customer`,
-            status
+            job_id: job.id,
+            status: { running: true, paused: false, total: customers.length, sent: 0, failed: 0, queued: customers.length, log: [] }
         });
 
     } catch (error) {
@@ -644,12 +647,137 @@ exports.startBroadcast = async (req, res) => {
 };
 
 /**
+ * Process next batch of broadcast messages (serverless-safe)
+ * POST /api/admin/broadcast/process
+ * Sends up to 5 messages concurrently per call
+ */
+exports.processBroadcast = async (req, res) => {
+    try {
+        // Find active broadcast job
+        const { rows: jobs } = await db.query(
+            `SELECT id, message FROM broadcast_jobs WHERE status = 'running' ORDER BY id DESC LIMIT 1`
+        );
+
+        if (jobs.length === 0) {
+            return res.json({ success: true, status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
+        }
+
+        const job = jobs[0];
+        const BATCH_SIZE = 5;
+
+        // Get next batch of pending recipients
+        const { rows: batch } = await db.query(
+            `SELECT id, customer_id, customer_name, customer_phone FROM broadcast_recipients
+             WHERE job_id = $1 AND status = 'pending' ORDER BY id ASC LIMIT $2`,
+            [job.id, BATCH_SIZE]
+        );
+
+        if (batch.length > 0) {
+            // Send messages concurrently
+            const results = await Promise.all(batch.map(async (recipient) => {
+                const message = job.message.replace(/{nama}/gi, recipient.customer_name || 'Kak');
+                const result = await whatsappService.sendMessage(recipient.customer_phone, message);
+
+                const status = result.success ? 'sent' : 'failed';
+
+                // Update recipient status
+                await db.query(
+                    `UPDATE broadcast_recipients SET status = $1, error = $2, sent_at = NOW() WHERE id = $3`,
+                    [status, result.error || null, recipient.id]
+                );
+
+                // Log to messages table
+                await db.query(
+                    `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
+                    [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] ${message}`]
+                ).catch(() => {});
+
+                // Auto-advance: New → Contacted on success
+                if (result.success) {
+                    await db.query(
+                        `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
+                        [recipient.customer_id]
+                    ).catch(() => {});
+                }
+
+                return { success: result.success, name: recipient.customer_name, phone: recipient.customer_phone, error: result.error };
+            }));
+
+            // Update job counters
+            const sentCount = results.filter(r => r.success).length;
+            const failedCount = results.filter(r => !r.success).length;
+            await db.query(
+                `UPDATE broadcast_jobs SET sent = sent + $1, failed = failed + $2 WHERE id = $3`,
+                [sentCount, failedCount, job.id]
+            );
+        }
+
+        // Check if all done
+        const { rows: [counts] } = await db.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE status = 'pending') as queued,
+                COUNT(*) FILTER (WHERE status = 'sent') as sent,
+                COUNT(*) FILTER (WHERE status = 'failed') as failed,
+                COUNT(*) as total
+             FROM broadcast_recipients WHERE job_id = $1`,
+            [job.id]
+        );
+
+        const allDone = parseInt(counts.queued) === 0;
+        if (allDone) {
+            await db.query(`UPDATE broadcast_jobs SET status = 'completed' WHERE id = $1`, [job.id]);
+        }
+
+        // Get recent log entries
+        const { rows: recentLog } = await db.query(
+            `SELECT customer_name as name, customer_phone as phone, status, error
+             FROM broadcast_recipients WHERE job_id = $1 AND status != 'pending'
+             ORDER BY sent_at DESC LIMIT 20`,
+            [job.id]
+        );
+
+        const log = recentLog.map(r => ({
+            success: r.status === 'sent',
+            name: r.name,
+            phone: r.phone,
+            error: r.error
+        }));
+
+        res.json({
+            success: true,
+            status: {
+                running: !allDone,
+                paused: false,
+                total: parseInt(counts.total),
+                sent: parseInt(counts.sent),
+                failed: parseInt(counts.failed),
+                queued: parseInt(counts.queued),
+                log
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ Process broadcast error:', error);
+        res.status(500).json({ success: false, message: 'Gagal memproses broadcast' });
+    }
+};
+
+/**
  * Stop broadcast
  * POST /api/admin/broadcast/stop
  */
 exports.stopBroadcast = async (req, res) => {
-    const status = whatsappService.stopBroadcast();
-    res.json({ success: true, message: 'Broadcast dihentikan', status });
+    try {
+        await db.query(`UPDATE broadcast_jobs SET status = 'stopped' WHERE status = 'running'`);
+        await db.query(
+            `UPDATE broadcast_recipients SET status = 'skipped'
+             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status = 'stopped') AND status = 'pending'`
+        );
+        res.json({ success: true, message: 'Broadcast dihentikan', status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
+    } catch (error) {
+        console.error('❌ Stop broadcast error:', error);
+        res.status(500).json({ success: false, message: 'Gagal menghentikan broadcast' });
+    }
 };
 
 /**
@@ -657,8 +785,13 @@ exports.stopBroadcast = async (req, res) => {
  * POST /api/admin/broadcast/pause
  */
 exports.pauseBroadcast = async (req, res) => {
-    const status = whatsappService.pauseBroadcast();
-    res.json({ success: true, message: 'Broadcast dijeda', status });
+    try {
+        await db.query(`UPDATE broadcast_jobs SET status = 'paused' WHERE status = 'running'`);
+        res.json({ success: true, message: 'Broadcast dijeda' });
+    } catch (error) {
+        console.error('❌ Pause broadcast error:', error);
+        res.status(500).json({ success: false, message: 'Gagal menjeda broadcast' });
+    }
 };
 
 /**
@@ -666,8 +799,13 @@ exports.pauseBroadcast = async (req, res) => {
  * POST /api/admin/broadcast/resume
  */
 exports.resumeBroadcast = async (req, res) => {
-    const status = whatsappService.resumeBroadcast();
-    res.json({ success: true, message: 'Broadcast dilanjutkan', status });
+    try {
+        await db.query(`UPDATE broadcast_jobs SET status = 'running' WHERE status = 'paused'`);
+        res.json({ success: true, message: 'Broadcast dilanjutkan' });
+    } catch (error) {
+        console.error('❌ Resume broadcast error:', error);
+        res.status(500).json({ success: false, message: 'Gagal melanjutkan broadcast' });
+    }
 };
 
 /**
@@ -675,8 +813,56 @@ exports.resumeBroadcast = async (req, res) => {
  * GET /api/admin/broadcast/status
  */
 exports.getBroadcastStatus = async (req, res) => {
-    const status = whatsappService.getBroadcastStatus();
-    res.json({ success: true, status });
+    try {
+        const { rows: jobs } = await db.query(
+            `SELECT id, status, total, created_at FROM broadcast_jobs ORDER BY id DESC LIMIT 1`
+        );
+
+        if (jobs.length === 0) {
+            return res.json({ success: true, status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
+        }
+
+        const job = jobs[0];
+        const { rows: [counts] } = await db.query(
+            `SELECT
+                COUNT(*) FILTER (WHERE status = 'pending') as queued,
+                COUNT(*) FILTER (WHERE status = 'sent') as sent,
+                COUNT(*) FILTER (WHERE status = 'failed') as failed,
+                COUNT(*) as total
+             FROM broadcast_recipients WHERE job_id = $1`,
+            [job.id]
+        );
+
+        const { rows: recentLog } = await db.query(
+            `SELECT customer_name as name, customer_phone as phone, status, error
+             FROM broadcast_recipients WHERE job_id = $1 AND status != 'pending'
+             ORDER BY sent_at DESC LIMIT 20`,
+            [job.id]
+        );
+
+        const log = recentLog.map(r => ({
+            success: r.status === 'sent',
+            name: r.name,
+            phone: r.phone,
+            error: r.error
+        }));
+
+        res.json({
+            success: true,
+            status: {
+                running: job.status === 'running',
+                paused: job.status === 'paused',
+                total: parseInt(counts.total),
+                sent: parseInt(counts.sent),
+                failed: parseInt(counts.failed),
+                queued: parseInt(counts.queued),
+                log
+            }
+        });
+    } catch (error) {
+        console.error('❌ Get broadcast status error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil status broadcast' });
+    }
 };
 
 /**
