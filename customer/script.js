@@ -71,7 +71,7 @@ form.addEventListener('submit', async (e) => {
         whatsapp: document.getElementById('whatsapp').value.trim(),
         metode_pembayaran: document.getElementById('metode_pembayaran').value,
         tahu_dari: document.getElementById('tahu_dari').value,
-        opted_in: document.getElementById('opted_in').checked
+        opted_in: true
     };
     
     // Validate
