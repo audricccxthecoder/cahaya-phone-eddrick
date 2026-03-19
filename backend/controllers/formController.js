@@ -5,6 +5,7 @@
 
 const db = require('../config/database');
 const whatsappService = require('../config/whatsapp');
+const googleService = require('../config/google');
 const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
 
 /**
@@ -110,6 +111,21 @@ exports.submitForm = async (req, res) => {
             await whatsappService.sendAutoReply({ nama_lengkap: finalName, whatsapp: cleanPhone });
         } catch (waError) {
             console.warn('⚠️ WhatsApp auto-reply failed:', waError.message || waError);
+        }
+
+        // Auto-save to Google Contacts (if connected)
+        try {
+            await googleService.saveContact({
+                nama_lengkap: finalName,
+                whatsapp: cleanPhone,
+                alamat: fullAddress || null,
+                merk_unit: merk_unit || null,
+                tipe_unit: tipe_unit || null,
+                metode_pembayaran: metode_pembayaran || null,
+                source
+            });
+        } catch (gcError) {
+            console.warn('⚠️ Google Contact save failed:', gcError.message || gcError);
         }
 
         res.json({

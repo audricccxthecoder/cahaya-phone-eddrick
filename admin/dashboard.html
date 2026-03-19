@@ -160,6 +160,22 @@
                 </div>
             </div>
 
+            <!-- Google Contacts Integration -->
+            <div class="card" style="margin-bottom:16px;">
+                <div class="card-header">
+                    <h3>Google Contacts</h3>
+                </div>
+                <div class="card-body">
+                    <p class="muted" style="margin-bottom:12px;">Hubungkan Google agar kontak customer otomatis tersimpan ke HP tanpa download.</p>
+                    <div id="googleStatus" style="display:flex;align-items:center;gap:12px;">
+                        <div id="googleIndicator" style="width:10px;height:10px;border-radius:50%;background:#ccc;"></div>
+                        <span id="googleStatusText" style="font-size:14px;color:#5C534B;">Mengecek...</span>
+                        <button id="googleConnectBtn" class="btn-primary" style="margin-left:auto;width:auto;padding:8px 20px;display:none;" onclick="connectGoogle()">Hubungkan Google</button>
+                        <button id="googleDisconnectBtn" class="btn-small" style="margin-left:auto;background:rgba(220,38,38,0.08);color:#DC2626;border:1px solid rgba(220,38,38,0.2);display:none;" onclick="disconnectGoogle()">Putuskan</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Recent Customers -->
             <div class="card">
                 <div class="card-header">

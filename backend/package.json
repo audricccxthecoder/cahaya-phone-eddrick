@@ -17,6 +17,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^4.22.1",
+    "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^6.9.4",
     "pg": "^8.12.0"

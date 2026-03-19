@@ -1601,6 +1601,77 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     }
 
     // ============================================
+    // GOOGLE CONTACTS INTEGRATION
+    // ============================================
+
+    async function checkGoogleStatus() {
+        try {
+            const resp = await fetch(`${API_URL}/google/status`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await resp.json();
+            const indicator = document.getElementById('googleIndicator');
+            const statusText = document.getElementById('googleStatusText');
+            const connectBtn = document.getElementById('googleConnectBtn');
+            const disconnectBtn = document.getElementById('googleDisconnectBtn');
+
+            if (data.connected) {
+                indicator.style.background = '#16A34A';
+                statusText.textContent = 'Terhubung — kontak customer otomatis tersimpan ke Google Contacts';
+                statusText.style.color = '#16A34A';
+                connectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'inline-block';
+            } else {
+                indicator.style.background = '#DC2626';
+                statusText.textContent = 'Belum terhubung';
+                statusText.style.color = '#DC2626';
+                connectBtn.style.display = 'inline-block';
+                disconnectBtn.style.display = 'none';
+            }
+        } catch (err) {
+            console.warn('Google status check failed:', err);
+            const indicator = document.getElementById('googleIndicator');
+            const statusText = document.getElementById('googleStatusText');
+            const connectBtn = document.getElementById('googleConnectBtn');
+            if (indicator) indicator.style.background = '#ccc';
+            if (statusText) {
+                statusText.textContent = 'Tidak bisa cek status';
+                statusText.style.color = '#5C534B';
+            }
+            if (connectBtn) connectBtn.style.display = 'inline-block';
+        }
+    }
+
+    window.connectGoogle = function() {
+        window.location.href = `${API_URL}/google/auth`;
+    };
+
+    window.disconnectGoogle = async function() {
+        if (!confirm('Putuskan Google Contacts? Kontak baru tidak akan otomatis tersimpan.')) return;
+        try {
+            await fetch(`${API_URL}/google/disconnect`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            checkGoogleStatus();
+        } catch (err) {
+            alert('Gagal memutuskan: ' + err.message);
+        }
+    };
+
+    // Check for Google OAuth redirect result
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('google') === 'connected') {
+        alert('Google Contacts berhasil terhubung! Kontak customer baru akan otomatis tersimpan.');
+        window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (urlParams.get('google') === 'error') {
+        alert('Gagal menghubungkan Google: ' + (urlParams.get('msg') || 'Unknown error'));
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    checkGoogleStatus();
+
+    // ============================================
     // INITIAL LOAD
     // ============================================
 

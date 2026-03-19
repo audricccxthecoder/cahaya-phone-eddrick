@@ -9,6 +9,7 @@ const router = express.Router();
 const formController = require('../controllers/formController');
 const webhookController = require('../controllers/webhookController');
 const adminController = require('../controllers/adminController');
+const googleController = require('../controllers/googleController');
 
 // Middleware
 const authMiddleware = require('../config/authMiddleware');
@@ -28,6 +29,12 @@ router.get('/webhook/test', webhookController.testWebhook);
 router.get('/sync/contacts', adminController.quickSyncVCF);
 router.get('/sync/list', adminController.quickSyncList);
 router.post('/sync/contacts/selected', adminController.quickSyncSelected);
+
+// Google Contacts OAuth
+router.get('/google/auth', googleController.authorize);
+router.get('/google/callback', googleController.callback);
+router.get('/google/status', authMiddleware, googleController.status);
+router.post('/google/disconnect', authMiddleware, googleController.disconnect);
 
 // Admin login
 router.post('/admin/login', adminController.login);
