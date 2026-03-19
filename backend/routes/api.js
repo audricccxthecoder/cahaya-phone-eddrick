@@ -24,6 +24,9 @@ router.post('/form-submit', formController.submitForm);
 router.post('/webhook/whatsapp', webhookController.handleWhatsAppWebhook);
 router.get('/webhook/test', webhookController.testWebhook);
 
+// Quick-sync contacts (no login, secret key)
+router.get('/sync/contacts', adminController.quickSyncVCF);
+
 // Admin login
 router.post('/admin/login', adminController.login);
 

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sync Kontak — Cahaya Phone</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family:'Inter',sans-serif;
+            background:#F8F6F3;
+            min-height:100vh;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            padding:20px;
+        }
+        .card {
+            background:#fff;
+            border-radius:20px;
+            border:1px solid #EDE8E3;
+            padding:48px 36px;
+            max-width:400px;
+            width:100%;
+            text-align:center;
+            box-shadow:0 20px 60px rgba(0,0,0,0.06);
+            position:relative;
+            overflow:hidden;
+        }
+        .card::before {
+            content:'';
+            position:absolute;
+            top:0;left:0;right:0;height:3px;
+            background:linear-gradient(90deg,#8B0000,#DC2626,#C9A84C,#DC2626,#8B0000);
+        }
+        .icon {
+            width:64px;height:64px;border-radius:50%;
+            background:rgba(185,28,28,0.06);
+            border:1px solid rgba(185,28,28,0.15);
+            display:flex;align-items:center;justify-content:center;
+            margin:0 auto 24px;
+        }
+        .icon svg { stroke:#B91C1C; }
+        h1 {
+            font-family:'Playfair Display',serif;
+            font-size:24px;font-weight:400;
+            color:#1A1412;margin-bottom:8px;
+        }
+        p { color:#9A918A;font-size:13px;margin-bottom:28px;line-height:1.6; }
+        .btn {
+            display:block;width:100%;padding:16px;
+            background:linear-gradient(145deg,#B91C1C,#8B0000);
+            color:#fff;border:none;border-radius:10px;
+            font-size:13px;font-weight:600;font-family:'Inter',sans-serif;
+            letter-spacing:0.1em;text-transform:uppercase;
+            cursor:pointer;transition:all 0.4s cubic-bezier(0.16,1,0.3,1);
+            text-decoration:none;
+            box-shadow:0 4px 16px rgba(185,28,28,0.2);
+        }
+        .btn:hover { transform:translateY(-2px);box-shadow:0 8px 24px rgba(185,28,28,0.3); }
+        .btn-outline {
+            margin-top:12px;
+            background:transparent;
+            color:#B91C1C;
+            border:1px solid rgba(185,28,28,0.2);
+            box-shadow:none;
+        }
+        .btn-outline:hover { background:rgba(185,28,28,0.04);box-shadow:none; }
+        .info {
+            margin-top:24px;padding:14px;
+            background:rgba(185,28,28,0.03);
+            border:1px solid rgba(185,28,28,0.1);
+            border-radius:10px;
+            font-size:11px;color:#5C534B;
+            line-height:1.6;text-align:left;
+        }
+        .info strong { color:#B91C1C; }
+        #status {
+            margin-top:16px;font-size:12px;color:#16A34A;
+            display:none;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+        </div>
+        <h1>Sync Kontak Customer</h1>
+        <p>Download semua kontak customer langsung ke HP. Tap tombol di bawah, buka file .vcf, semua nomor otomatis tersimpan.</p>
+
+        <a id="syncAllBtn" class="btn" href="#" onclick="syncAll()">
+            Download Semua Kontak
+        </a>
+        <a id="syncNewBtn" class="btn btn-outline" href="#" onclick="syncNew()">
+            Download Kontak Baru (Hari Ini)
+        </a>
+
+        <div id="status"></div>
+
+        <div class="info">
+            <strong>Cara pakai:</strong><br>
+            1. Tap tombol download<br>
+            2. Buka file .vcf yang terdownload<br>
+            3. Pilih "Import" / "Tambah semua kontak"<br>
+            4. Selesai! Semua nomor tersimpan di HP<br><br>
+            <strong>Tips:</strong> Bookmark halaman ini di homescreen HP untuk akses cepat setiap hari.
+        </div>
+    </div>
+
+    <script>
+        const SYNC_KEY = 'cahaya-sync-2026';
+        const API = '/api/sync/contacts';
+
+        function syncAll() {
+            event.preventDefault();
+            window.location.href = `${API}?key=${SYNC_KEY}`;
+            showStatus('Downloading semua kontak...');
+        }
+
+        function syncNew() {
+            event.preventDefault();
+            const today = new Date().toISOString().slice(0, 10);
+            window.location.href = `${API}?key=${SYNC_KEY}&since=${today}`;
+            showStatus('Downloading kontak baru hari ini...');
+        }
+
+        function showStatus(msg) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.style.display = 'block';
+            setTimeout(() => { el.style.display = 'none'; }, 3000);
+        }
+    </script>
+</body>
+</html>

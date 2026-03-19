@@ -631,6 +631,59 @@ exports.exportVCard = async (req, res) => {
 };
 
 /**
+ * Quick-sync VCF — no login, uses secret key
+ * GET /api/sync/contacts?key=SECRET
+ * Optional: ?key=SECRET&since=2026-03-20 (only new contacts since date)
+ */
+exports.quickSyncVCF = async (req, res) => {
+    try {
+        const { key, since } = req.query;
+        const syncKey = process.env.SYNC_SECRET || 'cahaya-sync-2026';
+
+        if (key !== syncKey) {
+            return res.status(403).json({ success: false, message: 'Invalid sync key' });
+        }
+
+        let query = `SELECT nama_lengkap, whatsapp, created_at FROM customers ORDER BY created_at DESC`;
+        const params = [];
+
+        if (since) {
+            query = `SELECT nama_lengkap, whatsapp, created_at FROM customers WHERE created_at >= $1 ORDER BY created_at DESC`;
+            params.push(since);
+        }
+
+        const { rows: customers } = await db.query(query, params);
+
+        if (customers.length === 0) {
+            return res.status(200).send('Tidak ada kontak baru.');
+        }
+
+        const vcards = customers.map(c => {
+            const phone = sanitizePhone(c.whatsapp);
+            const name = String(c.nama_lengkap || '').trim();
+            const escapedName = name.replace(/[;,\\]/g, m => '\\' + m);
+            return [
+                'BEGIN:VCARD',
+                'VERSION:3.0',
+                `FN:${escapedName} - CP`,
+                `TEL;TYPE=CELL:+${phone}`,
+                `NOTE:Customer Cahaya Phone`,
+                'END:VCARD'
+            ].join('\r\n');
+        }).join('\r\n');
+
+        const filename = `cp_contacts_${new Date().toISOString().slice(0,10)}.vcf`;
+        res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(vcards);
+
+    } catch (error) {
+        console.error('❌ Quick sync error:', error);
+        res.status(500).json({ success: false, message: 'Gagal sync: ' + error.message });
+    }
+};
+
+/**
  * Get daily broadcast sent count
  * GET /api/admin/broadcast/daily-count
  */
