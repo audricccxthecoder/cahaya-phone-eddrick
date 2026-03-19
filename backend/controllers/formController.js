@@ -49,11 +49,16 @@ exports.submitForm = async (req, res) => {
             const tdLower = td.toLowerCase();
 
             const mappings = [
-                { pattern: /instagram/i, name: 'Instagram' },
-                { pattern: /website/i, name: 'Website' },
-                { pattern: /facebook/i, name: 'Facebook' },
-                { pattern: /tiktok/i, name: 'TikTok' },
-                { pattern: /(teman|temen|keluarga)/i, name: 'Teman/Keluarga' }
+                { pattern: /\b(ig|insta|instagram|instgram)\b/i, name: 'Instagram' },
+                { pattern: /\b(web|website|site|google)\b/i, name: 'Website' },
+                { pattern: /\b(fb|facebook|facebk|fesbuk)\b/i, name: 'Facebook' },
+                { pattern: /\b(tt|tiktok|tik tok|tik-tok)\b/i, name: 'TikTok' },
+                { pattern: /\b(wa|whatsapp|grup|group)\b/i, name: 'WhatsApp' },
+                { pattern: /\b(yt|youtube|yutub)\b/i, name: 'YouTube' },
+                { pattern: /\b(tw|twitter|x\.com)\b/i, name: 'Twitter/X' },
+                { pattern: /\b(shopee|tokped|tokopedia|lazada|marketplace|olshop)\b/i, name: 'Marketplace' },
+                { pattern: /\b(teman|temen|tmn|sodara|saudara|keluarga|klrga|kenal|tetangga|ortu|nyokap|bokap|kakak|adik|om|tante)\b/i, name: 'Teman/Keluarga' },
+                { pattern: /\b(lewat|jalan|lalu|numpang|mampir|depan|toko|banner|spanduk|papan)\b/i, name: 'Walk-in' }
             ];
 
             const found = mappings.find(m => m.pattern.test(tdLower));
