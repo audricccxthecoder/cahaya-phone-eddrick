@@ -931,10 +931,13 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     }
 
     let activeTab = 'Belanja';
+    let currentPage = 1;
+    const rowsPerPage = 15;
+    let filteredCustomers = [];
 
     window.switchCustomerTab = function(tab) {
         activeTab = tab;
-        // Update tab styles
+        currentPage = 1;
         const tabBelanja = document.getElementById('tabBelanja');
         const tabChatOnly = document.getElementById('tabChatOnly');
         if (tab === 'Belanja') {
@@ -951,35 +954,49 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         applyFilters();
     };
 
+    window.goToPage = function(page) {
+        currentPage = page;
+        displayCustomers(filteredCustomers);
+    };
+
     function displayCustomers(customers) {
         const container = document.getElementById('customersTable');
+        filteredCustomers = customers;
 
         if (customers.length === 0) {
             container.innerHTML = '<div class="no-data">Belum ada customer</div>';
             return;
         }
 
+        const totalPages = Math.ceil(customers.length / rowsPerPage);
+        if (currentPage > totalPages) currentPage = totalPages;
+        const start = (currentPage - 1) * rowsPerPage;
+        const end = start + rowsPerPage;
+        const pageData = customers.slice(start, end);
         const isBelanja = activeTab === 'Belanja';
 
-        let html = `<table><thead><tr>
+        // Pagination info
+        let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:13px;color:#8C8078;">
+            <span>Menampilkan ${start + 1}–${Math.min(end, customers.length)} dari <strong>${customers.length}</strong> customer</span>
+        </div>`;
+
+        html += `<table><thead><tr>
             <th>No</th>
             <th>Nama</th>
             <th>WhatsApp</th>`;
-
         if (isBelanja) {
             html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Metode</th>`;
         }
-
         html += `<th>Source</th><th>Status</th><th>Tanggal</th><th>Aksi</th>
             </tr></thead><tbody>`;
 
-        customers.forEach((customer, index) => {
+        pageData.forEach((customer, index) => {
             const date = new Date(customer.created_at).toLocaleDateString('id-ID');
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
             html += `<tr>
-                <td>${index + 1}</td>
+                <td>${start + index + 1}</td>
                 <td>${customer.nama_lengkap}</td>
                 <td>${customer.whatsapp}</td>`;
 
@@ -1004,6 +1021,43 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         });
 
         html += '</tbody></table>';
+
+        // Pagination controls
+        if (totalPages > 1) {
+            html += `<div style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:16px;flex-wrap:wrap;">`;
+
+            // Previous
+            html += `<button onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}
+                style="padding:6px 12px;border:1px solid #EDE8E3;border-radius:6px;background:${currentPage === 1 ? '#F5F3F0' : '#fff'};color:${currentPage === 1 ? '#ccc' : '#5C534B'};cursor:${currentPage === 1 ? 'default' : 'pointer'};font-size:13px;">‹ Prev</button>`;
+
+            // Page numbers
+            const maxVisible = 5;
+            let startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+            let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+            if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+
+            if (startPage > 1) {
+                html += `<button onclick="goToPage(1)" style="padding:6px 10px;border:1px solid #EDE8E3;border-radius:6px;background:#fff;color:#5C534B;cursor:pointer;font-size:13px;">1</button>`;
+                if (startPage > 2) html += `<span style="color:#ccc;font-size:13px;">...</span>`;
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                const isActive = i === currentPage;
+                html += `<button onclick="goToPage(${i})" style="padding:6px 10px;border:1px solid ${isActive ? '#B91C1C' : '#EDE8E3'};border-radius:6px;background:${isActive ? '#B91C1C' : '#fff'};color:${isActive ? '#fff' : '#5C534B'};cursor:pointer;font-size:13px;font-weight:${isActive ? '600' : '400'};">${i}</button>`;
+            }
+
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) html += `<span style="color:#ccc;font-size:13px;">...</span>`;
+                html += `<button onclick="goToPage(${totalPages})" style="padding:6px 10px;border:1px solid #EDE8E3;border-radius:6px;background:#fff;color:#5C534B;cursor:pointer;font-size:13px;">${totalPages}</button>`;
+            }
+
+            // Next
+            html += `<button onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}
+                style="padding:6px 12px;border:1px solid #EDE8E3;border-radius:6px;background:${currentPage === totalPages ? '#F5F3F0' : '#fff'};color:${currentPage === totalPages ? '#ccc' : '#5C534B'};cursor:${currentPage === totalPages ? 'default' : 'pointer'};font-size:13px;">Next ›</button>`;
+
+            html += `</div>`;
+        }
+
         container.innerHTML = html;
     }
 
@@ -1026,6 +1080,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             to.setDate(to.getDate() + 1);
             filtered = filtered.filter(c => new Date(c.created_at) < to);
         }
+        currentPage = 1;
         displayCustomers(filtered);
     }
 
