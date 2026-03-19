@@ -100,11 +100,15 @@ class GoogleContactsService {
 
     async saveContact(customer) {
         try {
+            console.log(`📇 Attempting to save contact: ${customer.nama_lengkap}`);
             const auth = await this.getAuthenticatedClient();
             if (!auth) {
                 console.warn('⚠️ Google Contacts not connected, skipping save');
                 return { success: false, error: 'Not connected' };
             }
+
+            // Force token refresh if needed
+            await auth.getAccessToken();
 
             const people = google.people({ version: 'v1', auth });
 
@@ -156,6 +160,7 @@ class GoogleContactsService {
 
         } catch (error) {
             console.error('❌ Google Contact save failed:', error.message);
+            console.error('❌ Full error:', JSON.stringify(error.response?.data || error.errors || error.message));
             return { success: false, error: error.message };
         }
     }
