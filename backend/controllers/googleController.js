@@ -10,6 +10,15 @@ const googleService = require('../config/google');
  */
 exports.authorize = (req, res) => {
     try {
+        // Debug: check if env vars are set
+        if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REDIRECT_URI) {
+            return res.status(500).json({
+                error: 'Google env vars missing',
+                hasClientId: !!process.env.GOOGLE_CLIENT_ID,
+                hasClientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+                hasRedirectUri: !!process.env.GOOGLE_REDIRECT_URI
+            });
+        }
         const url = googleService.getAuthUrl();
         res.redirect(url);
     } catch (error) {
