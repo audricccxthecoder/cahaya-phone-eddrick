@@ -200,6 +200,10 @@
                             <option value="Teman/Keluarga">Teman/Keluarga</option>
                         </select>
                     </div>
+                    <div id="dailySentCounter" style="background:#1a1a2e;border:1px solid #2d2d44;padding:10px 14px;border-radius:8px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:20px;">📊</span>
+                        <span style="font-size:13px;color:#ccc;">Pesan terkirim hari ini: <strong id="dailySentCount" style="color:#f1c40f;font-size:16px;">-</strong></span>
+                    </div>
                     <div class="form-group">
                         <label>Pesan <small class="muted">(gunakan {nama} untuk nama customer)</small></label>
                         <textarea id="broadcastMessage" rows="4" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px;resize:vertical;" placeholder="Contoh: Halo {nama}, kami punya promo spesial untuk Anda! Kunjungi toko kami sekarang."></textarea>

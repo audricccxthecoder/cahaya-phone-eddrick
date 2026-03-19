@@ -631,6 +631,20 @@ exports.exportVCard = async (req, res) => {
 };
 
 /**
+ * Get daily broadcast sent count
+ * GET /api/admin/broadcast/daily-count
+ */
+exports.getDailySentCount = async (req, res) => {
+    try {
+        const count = await getDailySentCount();
+        res.json({ success: true, daily_sent: count });
+    } catch (error) {
+        console.error('❌ Daily count error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil jumlah harian' });
+    }
+};
+
+/**
  * Start broadcast (DB-backed, serverless-safe)
  * POST /api/admin/broadcast/start
  * Body: { message, source_filter? }

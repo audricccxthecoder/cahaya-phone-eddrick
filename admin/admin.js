@@ -1263,6 +1263,25 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     const broadcastResumeBtn = document.getElementById('broadcastResumeBtn');
     const broadcastStopBtn  = document.getElementById('broadcastStopBtn');
     const broadcastStatusEl = document.getElementById('broadcastStatus');
+    const dailySentCountEl = document.getElementById('dailySentCount');
+
+    // Load daily sent count on page load
+    async function loadDailySentCount() {
+        const res = await apiCall('/admin/broadcast/daily-count');
+        if (res && res.success) {
+            const count = res.daily_sent || 0;
+            dailySentCountEl.textContent = count;
+            // Color based on count
+            if (count >= 300) {
+                dailySentCountEl.style.color = '#e74c3c';
+            } else if (count >= 100) {
+                dailySentCountEl.style.color = '#f39c12';
+            } else {
+                dailySentCountEl.style.color = '#2ecc71';
+            }
+        }
+    }
+    loadDailySentCount();
 
     function renderBroadcastStatus(status) {
         if (!status) {
@@ -1278,6 +1297,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
         // Anti-spam: soft warning at 100 messages/day
         const dailySent = status.daily_sent || 0;
+        // Update top counter too
+        if (dailySentCountEl) {
+            dailySentCountEl.textContent = dailySent;
+            dailySentCountEl.style.color = dailySent >= 300 ? '#e74c3c' : dailySent >= 100 ? '#f39c12' : '#2ecc71';
+        }
         let warningHtml = '';
         if (dailySent >= 100) {
             const warningColor = dailySent >= 300 ? '#e74c3c' : '#f39c12';

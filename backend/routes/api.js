@@ -66,5 +66,6 @@ router.post('/admin/broadcast/stop', authMiddleware, adminController.stopBroadca
 router.post('/admin/broadcast/pause', authMiddleware, adminController.pauseBroadcast);
 router.post('/admin/broadcast/resume', authMiddleware, adminController.resumeBroadcast);
 router.get('/admin/broadcast/status', authMiddleware, adminController.getBroadcastStatus);
+router.get('/admin/broadcast/daily-count', authMiddleware, adminController.getDailySentCount);
 
 module.exports = router;
