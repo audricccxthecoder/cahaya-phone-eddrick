@@ -11,6 +11,60 @@ const { sanitizePhone } = require('../utils/phoneUtils');
 
 const VALID_STATUSES = ['New', 'Contacted', 'Follow Up', 'Completed', 'Inactive'];
 
+// ============================================
+// ANTI-SPAM: Message variation helpers
+// ============================================
+const RANDOM_GREETINGS = [
+    '', '', '', // empty = no prefix (most common, keeps original message)
+    'Halo, ', 'Hi, ', 'Hai, ',
+];
+
+const RANDOM_CLOSINGS = [
+    '', '', '', // empty = no closing (most common)
+    ' 😊', ' 🙏', ' ✨', ' 👍',
+    '\n\nTerima kasih!', '\n\nSalam hangat!', '\n\nSukses selalu!',
+];
+
+/**
+ * Add subtle random variations to broadcast message so each one is unique
+ * Prevents WhatsApp from detecting identical bulk messages
+ */
+function variasiPesan(message, customerName) {
+    let msg = message.replace(/{nama}/gi, customerName || 'Kak');
+
+    // Random greeting prefix (only if message doesn't already start with greeting)
+    const startsWithGreeting = /^(halo|hai|hi|hey|selamat)/i.test(msg);
+    if (!startsWithGreeting) {
+        const greeting = RANDOM_GREETINGS[Math.floor(Math.random() * RANDOM_GREETINGS.length)];
+        if (greeting) msg = greeting + msg;
+    }
+
+    // Random closing/emoji at end
+    const closing = RANDOM_CLOSINGS[Math.floor(Math.random() * RANDOM_CLOSINGS.length)];
+    msg = msg + closing;
+
+    return msg;
+}
+
+/**
+ * Random delay between min-max milliseconds (anti-spam)
+ */
+function randomDelay(minMs, maxMs) {
+    const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+    return new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * Get total messages sent today (for soft warning)
+ */
+async function getDailySentCount() {
+    const { rows } = await db.query(
+        `SELECT COUNT(*) as count FROM broadcast_recipients
+         WHERE status = 'sent' AND sent_at::date = CURRENT_DATE`
+    );
+    return parseInt(rows[0].count) || 0;
+}
+
 /**
  * Build WHERE clause from export/filter query params
  */
@@ -633,11 +687,14 @@ exports.startBroadcast = async (req, res) => {
             recipientParams
         );
 
+        // Anti-spam: daily sent count for soft warning
+        const dailySent = await getDailySentCount();
+
         res.json({
             success: true,
             message: `Broadcast dimulai untuk ${customers.length} customer`,
             job_id: job.id,
-            status: { running: true, paused: false, total: customers.length, sent: 0, failed: 0, queued: customers.length, log: [] }
+            status: { running: true, paused: false, total: customers.length, sent: 0, failed: 0, queued: customers.length, daily_sent: dailySent, log: [] }
         });
 
     } catch (error) {
@@ -663,49 +720,49 @@ exports.processBroadcast = async (req, res) => {
         }
 
         const job = jobs[0];
-        const BATCH_SIZE = 5;
 
-        // Get next batch of pending recipients
+        // Anti-spam: send ONE message at a time with random delay
         const { rows: batch } = await db.query(
             `SELECT id, customer_id, customer_name, customer_phone FROM broadcast_recipients
-             WHERE job_id = $1 AND status = 'pending' ORDER BY id ASC LIMIT $2`,
-            [job.id, BATCH_SIZE]
+             WHERE job_id = $1 AND status = 'pending' ORDER BY id ASC LIMIT 1`,
+            [job.id]
         );
 
         if (batch.length > 0) {
-            // Send messages concurrently
-            const results = await Promise.all(batch.map(async (recipient) => {
-                const message = job.message.replace(/{nama}/gi, recipient.customer_name || 'Kak');
-                const result = await whatsappService.sendMessage(recipient.customer_phone, message);
+            const recipient = batch[0];
 
-                const status = result.success ? 'sent' : 'failed';
+            // Anti-spam: random delay 3-8 seconds before sending
+            await randomDelay(3000, 8000);
 
-                // Update recipient status
+            // Anti-spam: variasi pesan agar tidak identik
+            const message = variasiPesan(job.message, recipient.customer_name);
+            const result = await whatsappService.sendMessage(recipient.customer_phone, message);
+
+            const status = result.success ? 'sent' : 'failed';
+
+            // Update recipient status
+            await db.query(
+                `UPDATE broadcast_recipients SET status = $1, error = $2, sent_at = NOW() WHERE id = $3`,
+                [status, result.error || null, recipient.id]
+            );
+
+            // Log to messages table
+            await db.query(
+                `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
+                [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] ${message}`]
+            ).catch(() => {});
+
+            // Auto-advance: New → Contacted on success
+            if (result.success) {
                 await db.query(
-                    `UPDATE broadcast_recipients SET status = $1, error = $2, sent_at = NOW() WHERE id = $3`,
-                    [status, result.error || null, recipient.id]
-                );
-
-                // Log to messages table
-                await db.query(
-                    `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
-                    [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] ${message}`]
+                    `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
+                    [recipient.customer_id]
                 ).catch(() => {});
-
-                // Auto-advance: New → Contacted on success
-                if (result.success) {
-                    await db.query(
-                        `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
-                        [recipient.customer_id]
-                    ).catch(() => {});
-                }
-
-                return { success: result.success, name: recipient.customer_name, phone: recipient.customer_phone, error: result.error };
-            }));
+            }
 
             // Update job counters
-            const sentCount = results.filter(r => r.success).length;
-            const failedCount = results.filter(r => !r.success).length;
+            const sentCount = result.success ? 1 : 0;
+            const failedCount = result.success ? 0 : 1;
             await db.query(
                 `UPDATE broadcast_jobs SET sent = sent + $1, failed = failed + $2 WHERE id = $3`,
                 [sentCount, failedCount, job.id]
@@ -743,6 +800,9 @@ exports.processBroadcast = async (req, res) => {
             error: r.error
         }));
 
+        // Anti-spam: daily sent count for soft warning
+        const dailySent = await getDailySentCount();
+
         res.json({
             success: true,
             status: {
@@ -752,6 +812,7 @@ exports.processBroadcast = async (req, res) => {
                 sent: parseInt(counts.sent),
                 failed: parseInt(counts.failed),
                 queued: parseInt(counts.queued),
+                daily_sent: dailySent,
                 log
             }
         });
@@ -847,6 +908,9 @@ exports.getBroadcastStatus = async (req, res) => {
             error: r.error
         }));
 
+        // Anti-spam: daily sent count for soft warning
+        const dailySent = await getDailySentCount();
+
         res.json({
             success: true,
             status: {
@@ -856,6 +920,7 @@ exports.getBroadcastStatus = async (req, res) => {
                 sent: parseInt(counts.sent),
                 failed: parseInt(counts.failed),
                 queued: parseInt(counts.queued),
+                daily_sent: dailySent,
                 log
             }
         });

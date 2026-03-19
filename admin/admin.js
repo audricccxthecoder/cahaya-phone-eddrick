@@ -1276,7 +1276,20 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             return `<div style="font-size:12px;">${icon} ${entry.name || entry.phone} — ${entry.success ? 'Terkirim' : 'Gagal: ' + (entry.error || '')}</div>`;
         }).join('');
 
+        // Anti-spam: soft warning at 100 messages/day
+        const dailySent = status.daily_sent || 0;
+        let warningHtml = '';
+        if (dailySent >= 100) {
+            const warningColor = dailySent >= 300 ? '#e74c3c' : '#f39c12';
+            const warningIcon = dailySent >= 300 ? '🔴' : '🟡';
+            const warningText = dailySent >= 300
+                ? `${warningIcon} RISIKO TINGGI! Sudah ${dailySent} pesan hari ini. Sangat berisiko banned.`
+                : `${warningIcon} Perhatian: Sudah ${dailySent} pesan hari ini. Hati-hati risiko banned.`;
+            warningHtml = `<div style="background:${warningColor}15;border:1px solid ${warningColor};color:${warningColor};padding:8px 12px;border-radius:6px;margin-bottom:10px;font-size:13px;font-weight:600;">${warningText}</div>`;
+        }
+
         broadcastStatusEl.innerHTML = `
+            ${warningHtml}
             <div style="margin-bottom:12px;">
                 <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:8px;">
                     <span><strong>Status:</strong> ${status.running ? (status.paused ? '⏸ Dijeda' : '▶ Berjalan') : '⏹ Selesai/Berhenti'}</span>
@@ -1284,11 +1297,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <span><strong>Terkirim:</strong> <span style="color:green">${status.sent}</span></span>
                     <span><strong>Gagal:</strong> <span style="color:red">${status.failed}</span></span>
                     <span><strong>Antrian:</strong> ${status.queued}</span>
+                    <span><strong>Hari ini:</strong> ${dailySent} pesan</span>
                 </div>
                 <div style="background:#eee;border-radius:4px;height:8px;">
                     <div style="background:#27ae60;width:${progressPct}%;height:8px;border-radius:4px;transition:width 0.3s;"></div>
                 </div>
-                <small class="muted">${progressPct}% selesai</small>
+                <small class="muted">${progressPct}% selesai — delay 3-8 detik antar pesan (anti-spam)</small>
             </div>
             <div style="max-height:200px;overflow-y:auto;border:1px solid #eee;padding:8px;border-radius:4px;">
                 ${logHtml || '<span class="muted">Log kosong</span>'}
@@ -1334,8 +1348,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 break;
             }
 
-            // Small delay before next batch to avoid hammering the API
-            await new Promise(r => setTimeout(r, 1000));
+            // Server handles 3-8s random delay per message (anti-spam)
+            // No extra frontend delay needed
         }
     }
 
