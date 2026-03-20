@@ -26,7 +26,6 @@
         <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
         <a href="#" class="nav-item" data-page="customers">Customers</a>
         <a href="#" class="nav-item" data-page="analytics">Analytics</a>
-        <a href="#" class="nav-item" data-page="sync">Sync Kontak</a>
         <a href="#" class="nav-item" data-page="broadcast">Broadcast</a>
         <a href="#" class="nav-item" data-page="messages">Chat Log</a>
     </nav>
@@ -313,34 +312,6 @@
             </div>
         </div>
 
-        <!-- Sync Kontak Page -->
-        <div id="syncPage" class="page">
-
-            <!-- Quick download -->
-            <div class="card" style="margin-bottom:16px;">
-                <div class="card-header"><h3>Download Cepat</h3></div>
-                <div class="card-body">
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                        <button class="btn-primary" style="width:100%" onclick="syncAll()">Download Semua Kontak</button>
-                        <button class="btn-small" style="padding:10px 14px;background:rgba(185,28,28,0.06);color:#B91C1C;border:1px solid rgba(185,28,28,0.15);" onclick="syncToday()">Download Hari Ini</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Browse by date -->
-            <div class="card">
-                <div class="card-header"><h3>Cari Berdasarkan Tanggal</h3></div>
-                <div class="card-body">
-                    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;">
-                        <input type="date" id="syncDatePicker" class="filter-date" style="flex:1;">
-                        <button class="btn-small" onclick="loadSyncByDate()">Cari</button>
-                    </div>
-                    <div id="syncCustomerList">
-                        <p class="muted" style="text-align:center;padding:20px;">Pilih tanggal lalu tap "Cari"</p>
-                    </div>
-                </div>
-            </div>
-        </div>
 
         <!-- Broadcast Page -->
         <div id="broadcastPage" class="page">
