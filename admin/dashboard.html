@@ -26,6 +26,7 @@
     <nav class="nav">
         <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
         <a href="#" class="nav-item" data-page="customers">Customers</a>
+        <a href="#" class="nav-item" data-page="analytics">Analytics</a>
         <a href="#" class="nav-item" data-page="sync">Sync Kontak</a>
         <a href="#" class="nav-item" data-page="broadcast">Broadcast</a>
         <a href="#" class="nav-item" data-page="messages">Chat Log</a>
@@ -293,6 +294,26 @@
             </div>
         </div>
 
+        <!-- Analytics Page -->
+        <div id="analyticsPage" class="page">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+                <div style="display:flex;gap:0;border-bottom:2px solid #EDE8E3;flex:1;">
+                    <button id="tabTopBuyers" class="customer-tab active" onclick="switchAnalyticsTab('buyers')" style="padding:10px 24px;font-size:14px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:3px solid #B91C1C;color:#B91C1C;margin-bottom:-2px;">Top Pembeli</button>
+                    <button id="tabTopProducts" class="customer-tab" onclick="switchAnalyticsTab('products')" style="padding:10px 24px;font-size:14px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:3px solid transparent;color:#8C8078;margin-bottom:-2px;">HP Terlaris</button>
+                    <button id="tabTopBrands" class="customer-tab" onclick="switchAnalyticsTab('brands')" style="padding:10px 24px;font-size:14px;font-weight:600;border:none;background:none;cursor:pointer;border-bottom:3px solid transparent;color:#8C8078;margin-bottom:-2px;">Merk Terlaris</button>
+                </div>
+                <button onclick="refreshAnalytics()" style="padding:6px 14px;border:1px solid #EDE8E3;border-radius:6px;background:#fff;color:#5C534B;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:5px;margin-left:12px;" title="Refresh data">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8C8078" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    Refresh
+                </button>
+            </div>
+            <div class="card">
+                <div id="analyticsContent" class="card-body">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Sync Kontak Page -->
         <div id="syncPage" class="page">
 
@@ -424,7 +445,7 @@
 
     <!-- Customer Detail Modal -->
     <div id="customerModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width:700px;">
             <div class="modal-header">
                 <h3>Detail Customer</h3>
                 <button class="modal-close" onclick="closeModal()">&times;</button>

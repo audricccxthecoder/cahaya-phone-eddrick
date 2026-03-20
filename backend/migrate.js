@@ -84,6 +84,27 @@ async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_msg_direction ON messages (direction)`);
     console.log('✅ Table messages created/verified');
 
+    // Buat tabel purchases (riwayat pembelian)
+    console.log('Creating table: purchases...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS purchases (
+        id SERIAL PRIMARY KEY,
+        customer_id INT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+        merk_unit VARCHAR(100),
+        tipe_unit VARCHAR(100),
+        harga NUMERIC(15,2),
+        qty INT DEFAULT 1,
+        nama_sales VARCHAR(100),
+        metode_pembayaran VARCHAR(50),
+        source VARCHAR(20) DEFAULT 'Website',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_purchases_customer ON purchases (customer_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_purchases_merk ON purchases (merk_unit)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases (created_at)`);
+    console.log('✅ Table purchases created/verified');
+
     // Ensure opted_in column exists and backfill NULLs
     console.log('Ensuring opted_in column...');
     await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS opted_in BOOLEAN DEFAULT TRUE`);
@@ -181,11 +202,13 @@ async function migrate() {
     const { rows: cc } = await client.query('SELECT COUNT(*) as count FROM customers');
     const { rows: ac } = await client.query('SELECT COUNT(*) as count FROM admins');
     const { rows: mc } = await client.query('SELECT COUNT(*) as count FROM messages');
+    const { rows: pc } = await client.query('SELECT COUNT(*) as count FROM purchases');
 
     console.log('\n📊 Database Summary:');
     console.log(`   Customers: ${cc[0].count}`);
     console.log(`   Admins: ${ac[0].count}`);
     console.log(`   Messages: ${mc[0].count}`);
+    console.log(`   Purchases: ${pc[0].count}`);
     console.log('\n✅ Migration completed successfully!');
 
   } catch (error) {

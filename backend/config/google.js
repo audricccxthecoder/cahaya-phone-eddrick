@@ -98,6 +98,35 @@ class GoogleContactsService {
         }
     }
 
+    /**
+     * Search existing contact by phone number
+     */
+    async findContactByPhone(people, phone) {
+        try {
+            const res = await people.people.searchContacts({
+                query: phone,
+                readMask: 'names,phoneNumbers',
+                pageSize: 5
+            });
+
+            const results = res.data.results || [];
+            // Match by phone number (strip non-digits for comparison)
+            const cleanSearch = phone.replace(/\D/g, '');
+            for (const r of results) {
+                const phones = r.person?.phoneNumbers || [];
+                for (const p of phones) {
+                    if (p.value && p.value.replace(/\D/g, '').endsWith(cleanSearch.slice(-10))) {
+                        return r.person;
+                    }
+                }
+            }
+            return null;
+        } catch (err) {
+            console.warn('⚠️ Contact search failed:', err.message);
+            return null;
+        }
+    }
+
     async saveContact(customer) {
         try {
             console.log(`📇 Attempting to save contact: ${customer.nama_lengkap}`);
@@ -132,6 +161,7 @@ class GoogleContactsService {
                 contactName = `${customer.nama_lengkap} - ${tanggal}`;
             }
 
+            // Build contact data
             const contactData = {
                 names: [{
                     givenName: contactName,
@@ -143,7 +173,6 @@ class GoogleContactsService {
                 }]
             };
 
-            // Add address if available
             if (customer.alamat) {
                 contactData.addresses = [{
                     formattedValue: customer.alamat,
@@ -151,7 +180,6 @@ class GoogleContactsService {
                 }];
             }
 
-            // Add notes with purchase info
             const notes = [];
             notes.push(`Tipe: ${tipe}`);
             if (customer.merk_unit) notes.push(`Merk: ${customer.merk_unit}`);
@@ -165,12 +193,29 @@ class GoogleContactsService {
                 contentType: 'TEXT_PLAIN'
             }];
 
-            const result = await people.people.createContact({
-                requestBody: contactData
-            });
+            // Check if contact already exists by phone number
+            const existing = await this.findContactByPhone(people, phone);
 
-            console.log(`✅ Google Contact saved: ${customer.nama_lengkap}`);
-            return { success: true, resourceName: result.data.resourceName };
+            let result;
+            if (existing && existing.resourceName) {
+                // Update existing contact
+                const etag = existing.etag;
+                const updateBody = { ...contactData, etag };
+                result = await people.people.updateContact({
+                    resourceName: existing.resourceName,
+                    updatePersonFields: 'names,phoneNumbers,addresses,biographies',
+                    requestBody: updateBody
+                });
+                console.log(`✅ Google Contact updated: ${contactName}`);
+                return { success: true, resourceName: result.data.resourceName, action: 'updated' };
+            } else {
+                // Create new contact
+                result = await people.people.createContact({
+                    requestBody: contactData
+                });
+                console.log(`✅ Google Contact created: ${contactName}`);
+                return { success: true, resourceName: result.data.resourceName, action: 'created' };
+            }
 
         } catch (error) {
             console.error('❌ Google Contact save failed:', error.message);

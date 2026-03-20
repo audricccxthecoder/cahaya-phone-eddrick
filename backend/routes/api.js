@@ -72,6 +72,11 @@ router.get('/admin/customers/:id', authMiddleware, adminController.getCustomerBy
 router.get('/admin/messages', authMiddleware, adminController.getMessages);
 router.get('/admin/messages/:customerId', authMiddleware, adminController.getMessagesByCustomer);
 
+// Analytics
+router.get('/admin/analytics/top-buyers', authMiddleware, adminController.getTopBuyers);
+router.get('/admin/analytics/top-products', authMiddleware, adminController.getTopProducts);
+router.get('/admin/analytics/top-brands', authMiddleware, adminController.getTopBrands);
+
 // Broadcast
 router.post('/admin/broadcast/start', authMiddleware, adminController.startBroadcast);
 router.post('/admin/broadcast/process', authMiddleware, adminController.processBroadcast);

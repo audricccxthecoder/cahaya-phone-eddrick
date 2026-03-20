@@ -77,15 +77,15 @@ exports.submitForm = async (req, res) => {
         // opted_in defaults to true if not explicitly set to false
         const optedIn = opted_in !== false;
 
-        // Check if this phone exists as Chat Only → upgrade to Belanja
-        const { rows: existingChat } = await db.query(
-            `SELECT id FROM customers WHERE whatsapp = $1 AND tipe = 'Chat Only' ORDER BY created_at DESC LIMIT 1`,
+        // Check if this phone already exists (Chat Only OR repeat buyer)
+        const { rows: existingCustomer } = await db.query(
+            `SELECT id FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1`,
             [cleanPhone]
         );
 
         let rows;
-        if (existingChat.length > 0) {
-            // Upgrade Chat Only → Belanja with full data
+        if (existingCustomer.length > 0) {
+            // Update existing record (Chat Only → Belanja, or repeat buyer update)
             const result = await db.query(
                 `UPDATE customers SET
                     nama_lengkap = $1, nama_sales = $2, merk_unit = $3, tipe_unit = $4,
@@ -97,7 +97,7 @@ exports.submitForm = async (req, res) => {
                     finalName, nama_sales || null, merk_unit || null, tipe_unit || null,
                     parsedHarga, parsedQty, tanggal_lahir || null, fullAddress,
                     metode_pembayaran || null, tahu_dari || null, source,
-                    optedIn, existingChat[0].id
+                    optedIn, existingCustomer[0].id
                 ]
             );
             rows = result.rows;
@@ -119,6 +119,15 @@ exports.submitForm = async (req, res) => {
         }
 
         const customerId = rows[0].id;
+
+        // Record purchase in purchases history table
+        if (parsedHarga || merk_unit || tipe_unit) {
+            await db.query(
+                `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [customerId, merk_unit || null, tipe_unit || null, parsedHarga, parsedQty, nama_sales || null, metode_pembayaran || null, source]
+            );
+        }
 
         await db.query(
             `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,

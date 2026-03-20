@@ -728,6 +728,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 loadDashboard();
             } else if (targetPage === 'customers') {
                 loadCustomers();
+            } else if (targetPage === 'analytics') {
+                loadAnalytics();
             } else if (targetPage === 'messages') {
                 loadMessages();
             }
@@ -995,9 +997,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
+            const pCount = customer.purchase_count || 0;
+            const repeatBadge = pCount > 1 ? ` <span style="background:#B91C1C;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;">${pCount}x</span>` : '';
+
             html += `<tr>
                 <td>${start + index + 1}</td>
-                <td>${customer.nama_lengkap}</td>
+                <td>${customer.nama_lengkap}${repeatBadge}</td>
                 <td>${customer.whatsapp}</td>`;
 
             if (isBelanja) {
@@ -1105,89 +1110,131 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     function showCustomerDetail(customer) {
         const modal = document.getElementById('customerModal');
         const detail = document.getElementById('customerDetail');
-        
+        const formatRpDetail = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val || 0);
+
         const date = new Date(customer.created_at).toLocaleString('id-ID');
-        const harga = customer.harga 
-            ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(customer.harga)
-            : '-';
+        const harga = customer.harga ? formatRpDetail(customer.harga) : '-';
         const tanggalLahir = customer.tanggal_lahir ? new Date(customer.tanggal_lahir).toLocaleDateString('id-ID') : '-';
         const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
         const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
-        
+
+        const purchases = customer.purchases || [];
+        const purchaseCount = customer.purchase_count || 0;
+
+        // Purchase history section
+        let purchaseHtml = '';
+        if (purchaseCount > 0) {
+            purchaseHtml = `
+                <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                        <h4 style="margin:0;font-size:15px;color:#1A1412;">Riwayat Pembelian</h4>
+                        <span style="background:#B91C1C;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;">${purchaseCount}x</span>
+                    </div>
+                    <table style="width:100%;font-size:13px;">
+                        <thead><tr>
+                            <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:500;">Tanggal</th>
+                            <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:500;">Produk</th>
+                            <th style="text-align:right;padding:8px 6px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:500;">Harga</th>
+                            <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:500;">Sales</th>
+                            <th style="text-align:left;padding:8px 6px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:500;">Metode</th>
+                        </tr></thead>
+                        <tbody>
+                            ${purchases.map(p => `
+                                <tr>
+                                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;">${new Date(p.created_at).toLocaleDateString('id-ID')}</td>
+                                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;font-weight:500;">${(p.merk_unit || '') + (p.tipe_unit ? ' ' + p.tipe_unit : '') || '-'}</td>
+                                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;text-align:right;">${p.harga ? formatRpDetail(p.harga) : '-'}</td>
+                                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;">${p.nama_sales || '-'}</td>
+                                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;">${p.metode_pembayaran || '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
         detail.innerHTML = `
-            <div class="detail-group">
-                <div class="detail-label">Nama Lengkap</div>
-                <div class="detail-value">${customer.nama_lengkap}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">WhatsApp</div>
-                <div class="detail-value">${customer.whatsapp}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Nama Sales</div>
-                <div class="detail-value">${customer.nama_sales || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Merk</div>
-                <div class="detail-value">${customer.merk_unit || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Tipe</div>
-                <div class="detail-value">${customer.tipe_unit || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Produk</div>
-                <div class="detail-value">${(customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Harga</div>
-                <div class="detail-value">${harga}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Qty</div>
-                <div class="detail-value">${customer.qty || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Tanggal Lahir</div>
-                <div class="detail-value">${tanggalLahir}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Alamat</div>
-                <div class="detail-value">${customer.alamat || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Metode Pembayaran</div>
-                <div class="detail-value">${customer.metode_pembayaran || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Tahu dari</div>
-                <div class="detail-value">${customer.tahu_dari || '-'}</div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Source</div>
-                <div class="detail-value"><span class="badge ${sourceClass}">${customer.source}</span></div>
-            </div>
-            <div class="detail-group">
-                <div class="detail-label">Status</div>
-                <div class="detail-value">
-                    <select class="status-select ${statusClass}" onchange="updateStatus(${customer.id}, this.value, this)">
-                        ${['New','Contacted','Follow Up','Completed','Inactive'].map(s =>
-                            `<option value="${s}" ${customer.status === s ? 'selected' : ''}>${s}</option>`
-                        ).join('')}
-                    </select>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+                <div class="detail-group">
+                    <div class="detail-label">Nama Lengkap</div>
+                    <div class="detail-value">${customer.nama_lengkap}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">WhatsApp</div>
+                    <div class="detail-value">${customer.whatsapp}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tanggal Lahir</div>
+                    <div class="detail-value">${tanggalLahir}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Alamat</div>
+                    <div class="detail-value">${customer.alamat || '-'}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Produk Terakhir</div>
+                    <div class="detail-value">${(customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-'}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Harga Terakhir</div>
+                    <div class="detail-value">${harga}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Metode Bayar</div>
+                    <div class="detail-value">${customer.metode_pembayaran || '-'}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Sales</div>
+                    <div class="detail-value">${customer.nama_sales || '-'}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tahu dari</div>
+                    <div class="detail-value">${customer.tahu_dari || '-'}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Source</div>
+                    <div class="detail-value"><span class="badge ${sourceClass}">${customer.source}</span></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Status</div>
+                    <div class="detail-value">
+                        <select class="status-select ${statusClass}" onchange="updateStatus(${customer.id}, this.value, this)">
+                            ${['New','Contacted','Follow Up','Completed','Inactive'].map(s =>
+                                `<option value="${s}" ${customer.status === s ? 'selected' : ''}>${s}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Total Pembelian</div>
+                    <div class="detail-value" style="font-weight:600;color:#B91C1C;">${purchaseCount}x transaksi</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Terdaftar</div>
+                    <div class="detail-value">${date}</div>
                 </div>
             </div>
-            <div class="detail-group">
-                <div class="detail-label">Tanggal Daftar</div>
-                <div class="detail-value">${date}</div>
-            </div>
+            ${purchaseHtml}
         `;
-        
+
         modal.classList.add('show');
     }
 
     window.closeModal = function() {
         document.getElementById('customerModal').classList.remove('show');
+    };
+
+    window.updateStatus = async function(customerId, newStatus, selectEl) {
+        const res = await apiCall(`/admin/customers/${customerId}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: newStatus })
+        });
+        if (res && res.success) {
+            selectEl.className = 'status-select ' + newStatus.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            // Refresh customer list if loaded
+            if (allCustomers.length > 0) loadCustomers();
+        }
     };
 
     // Close modal on backdrop click
@@ -1692,6 +1739,137 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     }
 
     // ============================================
+    // ANALYTICS PAGE
+    // ============================================
+
+    let analyticsTab = 'buyers';
+    let analyticsCache = {};
+
+    async function loadAnalytics() {
+        analyticsCache = {};
+        await renderAnalyticsTab();
+    }
+
+    window.refreshAnalytics = async function() {
+        analyticsCache = {};
+        await renderAnalyticsTab();
+    };
+
+    window.switchAnalyticsTab = function(tab) {
+        analyticsTab = tab;
+        const tabs = { buyers: 'tabTopBuyers', products: 'tabTopProducts', brands: 'tabTopBrands' };
+        Object.entries(tabs).forEach(([key, id]) => {
+            const el = document.getElementById(id);
+            if (key === tab) {
+                el.style.borderBottomColor = '#B91C1C';
+                el.style.color = '#B91C1C';
+            } else {
+                el.style.borderBottomColor = 'transparent';
+                el.style.color = '#8C8078';
+            }
+        });
+        renderAnalyticsTab();
+    };
+
+    async function renderAnalyticsTab() {
+        const container = document.getElementById('analyticsContent');
+        container.innerHTML = '<div class="loading">Loading...</div>';
+        const formatRp = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val || 0);
+
+        if (analyticsTab === 'buyers') {
+            if (!analyticsCache.buyers) {
+                const res = await apiCall('/admin/analytics/top-buyers');
+                analyticsCache.buyers = (res && res.success) ? res.data : [];
+            }
+            const data = analyticsCache.buyers;
+            if (data.length === 0) {
+                container.innerHTML = '<div class="no-data">Belum ada data pembelian</div>';
+                return;
+            }
+            let html = `<table><thead><tr>
+                <th>No</th><th>Nama</th><th>WhatsApp</th><th>Total Beli</th><th>Total Belanja</th><th>Aksi</th>
+            </tr></thead><tbody>`;
+            data.forEach((row, i) => {
+                html += `<tr>
+                    <td>${i + 1}</td>
+                    <td><strong>${row.nama_lengkap}</strong></td>
+                    <td>${row.whatsapp}</td>
+                    <td><span style="background:#B91C1C;color:#fff;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;">${row.total_purchases}x</span></td>
+                    <td style="font-weight:600;">${formatRp(row.total_spent)}</td>
+                    <td><button class="btn-small" onclick="viewCustomer(${row.id})">Detail</button></td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+
+        } else if (analyticsTab === 'products') {
+            if (!analyticsCache.products) {
+                const res = await apiCall('/admin/analytics/top-products');
+                analyticsCache.products = (res && res.success) ? res.data : [];
+            }
+            const data = analyticsCache.products;
+            if (data.length === 0) {
+                container.innerHTML = '<div class="no-data">Belum ada data produk</div>';
+                return;
+            }
+            const maxSold = Math.max(...data.map(d => Number(d.total_sold)));
+            let html = `<table><thead><tr>
+                <th>No</th><th>Produk</th><th>Terjual</th><th>Total Revenue</th><th>Popularitas</th>
+            </tr></thead><tbody>`;
+            data.forEach((row, i) => {
+                const pct = maxSold > 0 ? (Number(row.total_sold) / maxSold * 100) : 0;
+                html += `<tr>
+                    <td>${i + 1}</td>
+                    <td><strong>${row.merk_unit || '-'}</strong> ${row.tipe_unit || ''}</td>
+                    <td><span style="background:rgba(185,28,28,0.08);color:#B91C1C;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;">${row.total_sold}x</span></td>
+                    <td style="font-weight:500;">${formatRp(row.total_revenue)}</td>
+                    <td style="width:150px;">
+                        <div style="background:#F5F3F0;border-radius:6px;height:8px;overflow:hidden;">
+                            <div style="background:linear-gradient(90deg,#B91C1C,#DC2626);height:100%;width:${pct}%;border-radius:6px;transition:width 0.4s;"></div>
+                        </div>
+                    </td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+
+        } else if (analyticsTab === 'brands') {
+            if (!analyticsCache.brands) {
+                const res = await apiCall('/admin/analytics/top-brands');
+                analyticsCache.brands = (res && res.success) ? res.data : [];
+            }
+            const data = analyticsCache.brands;
+            if (data.length === 0) {
+                container.innerHTML = '<div class="no-data">Belum ada data merk</div>';
+                return;
+            }
+            const totalAll = data.reduce((sum, d) => sum + Number(d.total_sold), 0);
+            const colors = ['#B91C1C','#DC2626','#EF4444','#F87171','#FCA5A5','#FECACA','#FEE2E2','#D97706','#2563EB','#16A34A'];
+            let html = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px;margin-bottom:20px;">`;
+            data.forEach((row, i) => {
+                const pct = totalAll > 0 ? (Number(row.total_sold) / totalAll * 100).toFixed(1) : 0;
+                const color = colors[i % colors.length];
+                html += `
+                    <div style="background:#fff;border:1px solid #EDE8E3;border-radius:12px;padding:16px;transition:box-shadow 0.2s;" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.06)'" onmouseout="this.style.boxShadow='none'">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                            <span style="font-weight:600;font-size:15px;">${row.brand}</span>
+                            <span style="background:${color};color:#fff;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:600;">${row.total_sold}x</span>
+                        </div>
+                        <div style="font-size:13px;color:#5C534B;margin-bottom:8px;">
+                            Revenue: <strong>${formatRp(row.total_revenue)}</strong>
+                        </div>
+                        <div style="background:#F5F3F0;border-radius:6px;height:8px;overflow:hidden;">
+                            <div style="background:${color};height:100%;width:${pct}%;border-radius:6px;transition:width 0.4s;"></div>
+                        </div>
+                        <div style="font-size:11px;color:#8C8078;margin-top:4px;">${pct}% dari total penjualan</div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+    }
+
     // ============================================
     // PIPELINE DETAIL MODAL
     // ============================================

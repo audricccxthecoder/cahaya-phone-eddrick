@@ -265,12 +265,15 @@ exports.getPipelineMonthly = async (req, res) => {
 exports.getCustomers = async (req, res) => {
     try {
         const { rows: customers } = await db.query(
-            `SELECT
-                id, nama_lengkap, nama_sales, merk_unit, tipe_unit,
-                harga, qty, whatsapp, metode_pembayaran,
-                source, status, tipe, created_at
-            FROM customers
-            ORDER BY created_at DESC`
+            `SELECT c.id, c.nama_lengkap, c.nama_sales, c.merk_unit, c.tipe_unit,
+                c.harga, c.qty, c.whatsapp, c.metode_pembayaran,
+                c.source, c.status, c.tipe, c.created_at,
+                COALESCE(p.purchase_count, 0)::int as purchase_count
+            FROM customers c
+            LEFT JOIN (
+                SELECT customer_id, COUNT(*) as purchase_count FROM purchases GROUP BY customer_id
+            ) p ON p.customer_id = c.id
+            ORDER BY c.created_at DESC`
         );
 
         res.json({
@@ -307,9 +310,16 @@ exports.getCustomerById = async (req, res) => {
             });
         }
 
+        // Include purchase history
+        const { rows: purchases } = await db.query(
+            `SELECT id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, created_at
+             FROM purchases WHERE customer_id = $1 ORDER BY created_at DESC`,
+            [id]
+        );
+
         res.json({
             success: true,
-            data: customers[0]
+            data: { ...customers[0], purchases, purchase_count: purchases.length }
         });
 
     } catch (error) {
@@ -1185,5 +1195,79 @@ exports.resetPassword = async (req, res) => {
     } catch (error) {
         console.error('❌ Reset password error:', error);
         res.status(500).json({ success: false, message: 'Gagal mereset password' });
+    }
+};
+
+// ============================================
+// ANALYTICS ENDPOINTS
+// ============================================
+
+/**
+ * Top buyers — customers with most purchases
+ * GET /api/admin/analytics/top-buyers
+ */
+exports.getTopBuyers = async (req, res) => {
+    try {
+        const { rows } = await db.query(`
+            SELECT c.id, c.nama_lengkap, c.whatsapp,
+                   COUNT(p.id) as total_purchases,
+                   COALESCE(SUM(p.harga * p.qty), 0) as total_spent
+            FROM customers c
+            JOIN purchases p ON p.customer_id = c.id
+            GROUP BY c.id, c.nama_lengkap, c.whatsapp
+            ORDER BY total_purchases DESC, total_spent DESC
+            LIMIT 20
+        `);
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error('❌ Top buyers error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil data' });
+    }
+};
+
+/**
+ * Top products — most sold phone models
+ * GET /api/admin/analytics/top-products
+ */
+exports.getTopProducts = async (req, res) => {
+    try {
+        const { rows } = await db.query(`
+            SELECT merk_unit, tipe_unit,
+                   COUNT(*) as total_sold,
+                   SUM(qty) as total_qty,
+                   COALESCE(SUM(harga * qty), 0) as total_revenue
+            FROM purchases
+            WHERE merk_unit IS NOT NULL AND merk_unit != ''
+            GROUP BY merk_unit, tipe_unit
+            ORDER BY total_sold DESC
+            LIMIT 20
+        `);
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error('❌ Top products error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil data' });
+    }
+};
+
+/**
+ * Brand stats — sales by brand
+ * GET /api/admin/analytics/top-brands
+ */
+exports.getTopBrands = async (req, res) => {
+    try {
+        const { rows } = await db.query(`
+            SELECT merk_unit as brand,
+                   COUNT(*) as total_sold,
+                   SUM(qty) as total_qty,
+                   COALESCE(SUM(harga * qty), 0) as total_revenue
+            FROM purchases
+            WHERE merk_unit IS NOT NULL AND merk_unit != ''
+            GROUP BY merk_unit
+            ORDER BY total_sold DESC
+        `);
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error('❌ Top brands error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil data' });
     }
 };

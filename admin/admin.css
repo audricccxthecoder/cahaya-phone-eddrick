@@ -1150,3 +1150,61 @@ p.muted {
         grid-template-columns: 1fr;
     }
 }
+
+/* ============================================
+   TABLE IMPROVEMENTS
+   ============================================ */
+
+table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    z-index: 1;
+}
+
+table tbody tr {
+    transition: background 0.15s ease;
+}
+
+table tbody tr:hover {
+    background: rgba(185, 28, 28, 0.03);
+}
+
+/* ============================================
+   DETAIL MODAL GRID
+   ============================================ */
+
+.detail-group {
+    padding: 10px 12px;
+    border-bottom: 1px solid #F5F3F0;
+}
+
+.detail-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+}
+
+.detail-value {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+/* ============================================
+   PERFORMANCE: GPU acceleration for transitions
+   ============================================ */
+
+.page, .modal, .card, .nav-item {
+    will-change: auto;
+}
+
+.page.active {
+    will-change: opacity;
+}
