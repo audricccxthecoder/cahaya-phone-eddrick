@@ -152,11 +152,11 @@ class GoogleContactsService {
 
             // Nama kontak berdasarkan tipe:
             // Belanja (form submit): "Nama - 20/03/2026"
-            // Chat Only (WA chat): "Nama - Customer 20/03/2026"
+            // Chat Only (WA chat): "Customer - 20/03/2026"
             const tipe = customer.tipe || 'Belanja';
             let contactName;
             if (tipe === 'Chat Only') {
-                contactName = `${customer.nama_lengkap} - Customer ${tanggal}`;
+                contactName = `Customer - ${tanggal}`;
             } else {
                 contactName = `${customer.nama_lengkap} - ${tanggal}`;
             }
