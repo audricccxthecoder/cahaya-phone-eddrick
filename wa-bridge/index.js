@@ -219,8 +219,8 @@ waClient.on('ready', async () => {
 
 // Incoming message handler
 waClient.on('message', async (msg) => {
-    // Abaikan pesan dari group, status, atau pesan sendiri
-    if (msg.isGroupMsg || msg.isStatus || msg.fromMe) return;
+    // Abaikan pesan dari group, status, broadcast, atau pesan sendiri
+    if (msg.isGroupMsg || msg.from.endsWith('@g.us') || msg.isStatus || msg.fromMe || msg.from === 'status@broadcast') return;
 
     const phone = msg.from.replace('@c.us', '');
     const text = msg.body;
