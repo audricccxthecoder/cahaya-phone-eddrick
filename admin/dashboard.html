@@ -37,6 +37,22 @@
         <!-- Dashboard Page -->
         <div id="dashboardPage" class="page active">
 
+            <!-- Cleanup Warning Banner -->
+            <div id="cleanupBanner" style="display:none;background:linear-gradient(135deg,#FEF3C7,#FDE68A);border:1px solid #F59E0B;padding:14px 20px;border-radius:10px;margin-bottom:16px;display:none;">
+                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:20px;">&#x1F5D1;</span>
+                        <div>
+                            <strong style="font-size:13px;color:#92400E;" id="cleanupBannerTitle">Data Cleanup</strong>
+                            <p style="margin:2px 0 0;font-size:12px;color:#92400E;" id="cleanupBannerText"></p>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn-small" style="font-size:11px;padding:6px 14px;background:#F59E0B;color:#fff;border-color:#F59E0B;" onclick="navigateToCleanup()">Kelola Data</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Pipeline Overview -->
             <div class="card" style="margin-bottom:20px;padding:24px;background:linear-gradient(135deg,#B91C1C 0%,#8B0000 100%);color:#fff;border:none;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
@@ -563,6 +579,17 @@
 
         <!-- Messages Page -->
         <div id="messagesPage" class="page">
+
+            <!-- Cleanup Card -->
+            <div class="card" style="margin-bottom:16px;">
+                <div class="card-header">
+                    <h3>Data Cleanup</h3>
+                    <button class="btn-small" onclick="loadCleanupStatus()">Refresh</button>
+                </div>
+                <div class="card-body" id="cleanupContainer">
+                    <div class="loading">Memuat status cleanup...</div>
+                </div>
+            </div>
 
             <div class="card">
                 <div id="messagesTable" class="card-body">

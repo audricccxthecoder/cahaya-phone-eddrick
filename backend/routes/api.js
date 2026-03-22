@@ -106,4 +106,9 @@ router.post('/admin/wa/disconnect', authMiddleware, adminController.disconnectWA
 router.post('/admin/wa/restart', authMiddleware, adminController.restartWA);
 router.post('/admin/wa/settings', authMiddleware, adminController.updateWASettings);
 
+// Data cleanup
+router.get('/admin/cleanup/status', authMiddleware, adminController.getCleanupStatus);
+router.get('/admin/cleanup/export', authMiddleware, adminController.exportOldLogs);
+router.post('/admin/cleanup/delete', authMiddleware, adminController.deleteOldLogs);
+
 module.exports = router;

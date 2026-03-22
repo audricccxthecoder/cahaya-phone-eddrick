@@ -1377,3 +1377,186 @@ exports.updateWASettings = async (req, res) => {
     const result = await waBridgeRequest('POST', '/api/settings', req.body);
     res.json(result);
 };
+
+// ============================================
+// DATA CLEANUP (Chat Log & Broadcast Log)
+// ============================================
+
+const CLEANUP_DAYS = 30; // Hapus data lebih dari 30 hari
+
+/**
+ * Get cleanup status - berapa data lama, warning countdown
+ * GET /api/admin/cleanup/status
+ */
+exports.getCleanupStatus = async (req, res) => {
+    try {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
+
+        // Hitung data lama
+        const { rows: [msgCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM messages WHERE sent_at < $1`,
+            [cutoffDate]
+        );
+        const { rows: [bcastJobCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM broadcast_jobs WHERE created_at < $1`,
+            [cutoffDate]
+        );
+        const { rows: [bcastRecCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM broadcast_recipients
+             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE created_at < $1)`,
+            [cutoffDate]
+        );
+        const { rows: [resetCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM admin_reset_tokens WHERE expires_at < NOW()`
+        );
+
+        // Cari tanggal data paling lama
+        const { rows: [oldest] } = await db.query(
+            `SELECT MIN(sent_at) as oldest_message FROM messages`
+        );
+
+        // Hitung hari sampai cleanup berikutnya
+        let daysUntilCleanup = null;
+        if (oldest.oldest_message) {
+            const oldestDate = new Date(oldest.oldest_message);
+            const cleanupDate = new Date(oldestDate);
+            cleanupDate.setDate(cleanupDate.getDate() + CLEANUP_DAYS);
+            const now = new Date();
+            daysUntilCleanup = Math.max(0, Math.ceil((cleanupDate - now) / (1000 * 60 * 60 * 24)));
+        }
+
+        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total) + parseInt(resetCount.total);
+
+        res.json({
+            success: true,
+            data: {
+                oldMessages: parseInt(msgCount.total),
+                oldBroadcastJobs: parseInt(bcastJobCount.total),
+                oldBroadcastRecipients: parseInt(bcastRecCount.total),
+                expiredTokens: parseInt(resetCount.total),
+                totalOldRecords,
+                cutoffDate: cutoffDate.toISOString(),
+                daysUntilCleanup,
+                cleanupDays: CLEANUP_DAYS
+            }
+        });
+    } catch (error) {
+        console.error('❌ Cleanup status error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil status cleanup' });
+    }
+};
+
+/**
+ * Export old logs to CSV before deletion
+ * GET /api/admin/cleanup/export
+ */
+exports.exportOldLogs = async (req, res) => {
+    try {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
+
+        // Export messages
+        const { rows: messages } = await db.query(
+            `SELECT m.id, m.direction, m.message, m.sent_at,
+                    c.nama_lengkap, c.whatsapp
+             FROM messages m
+             LEFT JOIN customers c ON c.id = m.customer_id
+             WHERE m.sent_at < $1
+             ORDER BY m.sent_at ASC`,
+            [cutoffDate]
+        );
+
+        // Export broadcast jobs + recipients
+        const { rows: broadcasts } = await db.query(
+            `SELECT bj.id as job_id, bj.message as broadcast_message, bj.status as job_status,
+                    bj.total, bj.sent, bj.failed, bj.created_at as job_date,
+                    br.customer_name, br.customer_phone, br.status as recipient_status,
+                    br.error, br.sent_at
+             FROM broadcast_jobs bj
+             LEFT JOIN broadcast_recipients br ON br.job_id = bj.id
+             WHERE bj.created_at < $1
+             ORDER BY bj.created_at ASC, br.id ASC`,
+            [cutoffDate]
+        );
+
+        // Build CSV
+        let csv = 'CHAT LOG\n';
+        csv += 'ID,Nama,WhatsApp,Direction,Pesan,Tanggal\n';
+        messages.forEach(m => {
+            const msg = (m.message || '').replace(/"/g, '""').replace(/\n/g, ' ');
+            const date = new Date(m.sent_at).toLocaleString('id-ID');
+            csv += `${m.id},"${m.nama_lengkap || ''}","${m.whatsapp || ''}",${m.direction},"${msg}","${date}"\n`;
+        });
+
+        csv += '\n\nBROADCAST LOG\n';
+        csv += 'Job ID,Pesan Broadcast,Status Job,Total,Sent,Failed,Tanggal Job,Nama Penerima,No HP,Status Kirim,Error,Tanggal Kirim\n';
+        broadcasts.forEach(b => {
+            const bMsg = (b.broadcast_message || '').replace(/"/g, '""').replace(/\n/g, ' ');
+            const jobDate = new Date(b.job_date).toLocaleString('id-ID');
+            const sentDate = b.sent_at ? new Date(b.sent_at).toLocaleString('id-ID') : '';
+            csv += `${b.job_id},"${bMsg}",${b.job_status},${b.total},${b.sent},${b.failed},"${jobDate}","${b.customer_name || ''}","${b.customer_phone || ''}",${b.recipient_status || ''},"${b.error || ''}","${sentDate}"\n`;
+        });
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="backup-logs-${new Date().toISOString().slice(0,10)}.csv"`);
+        res.send('\uFEFF' + csv); // BOM for Excel
+    } catch (error) {
+        console.error('❌ Export logs error:', error);
+        res.status(500).json({ success: false, message: 'Gagal export data' });
+    }
+};
+
+/**
+ * Delete old logs (permanent)
+ * POST /api/admin/cleanup/delete
+ */
+exports.deleteOldLogs = async (req, res) => {
+    try {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
+
+        // Hapus broadcast recipients dulu (foreign key)
+        const { rowCount: recDeleted } = await db.query(
+            `DELETE FROM broadcast_recipients
+             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE created_at < $1)`,
+            [cutoffDate]
+        );
+
+        // Hapus broadcast jobs
+        const { rowCount: jobDeleted } = await db.query(
+            `DELETE FROM broadcast_jobs WHERE created_at < $1`,
+            [cutoffDate]
+        );
+
+        // Hapus messages
+        const { rowCount: msgDeleted } = await db.query(
+            `DELETE FROM messages WHERE sent_at < $1`,
+            [cutoffDate]
+        );
+
+        // Hapus expired reset tokens
+        const { rowCount: tokenDeleted } = await db.query(
+            `DELETE FROM admin_reset_tokens WHERE expires_at < NOW()`
+        );
+
+        const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted;
+
+        console.log(`🗑️ Cleanup: ${msgDeleted} messages, ${jobDeleted} broadcast jobs, ${recDeleted} broadcast recipients, ${tokenDeleted} tokens deleted`);
+
+        res.json({
+            success: true,
+            message: `${totalDeleted} data lama berhasil dihapus`,
+            deleted: {
+                messages: msgDeleted,
+                broadcastJobs: jobDeleted,
+                broadcastRecipients: recDeleted,
+                expiredTokens: tokenDeleted,
+                total: totalDeleted
+            }
+        });
+    } catch (error) {
+        console.error('❌ Delete logs error:', error);
+        res.status(500).json({ success: false, message: 'Gagal menghapus data' });
+    }
+};

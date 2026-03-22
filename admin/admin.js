@@ -622,6 +622,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 loadWAAutoReply();
             } else if (targetPage === 'messages') {
                 loadMessages();
+                loadCleanupStatus();
             }
         });
     });
@@ -1192,8 +1193,181 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     });
 
     // ============================================
-    // MESSAGES PAGE
+    // MESSAGES PAGE + DATA CLEANUP
     // ============================================
+
+    // --- Cleanup functions ---
+
+    window.loadCleanupStatus = async function() {
+        const container = document.getElementById('cleanupContainer');
+        const res = await apiCall('/admin/cleanup/status');
+
+        if (!res || !res.success) {
+            container.innerHTML = '<p class="muted">Gagal memuat status cleanup.</p>';
+            return;
+        }
+
+        const d = res.data;
+        const hasOldData = d.totalOldRecords > 0;
+
+        let urgencyColor = '#8C8078';
+        let urgencyText = 'Aman';
+        if (d.daysUntilCleanup !== null) {
+            if (d.daysUntilCleanup <= 0) {
+                urgencyColor = '#DC2626';
+                urgencyText = 'Perlu dihapus sekarang!';
+            } else if (d.daysUntilCleanup <= 3) {
+                urgencyColor = '#F59E0B';
+                urgencyText = `${d.daysUntilCleanup} hari lagi`;
+            } else if (d.daysUntilCleanup <= 7) {
+                urgencyColor = '#F59E0B';
+                urgencyText = `${d.daysUntilCleanup} hari lagi`;
+            } else {
+                urgencyText = `${d.daysUntilCleanup} hari lagi`;
+            }
+        }
+
+        container.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+                <div style="background:#F5F3F0;padding:14px;border-radius:8px;text-align:center;">
+                    <div style="font-size:22px;font-weight:700;color:#B91C1C;">${d.oldMessages}</div>
+                    <div style="font-size:11px;color:#8C8078;">Chat Log Lama</div>
+                </div>
+                <div style="background:#F5F3F0;padding:14px;border-radius:8px;text-align:center;">
+                    <div style="font-size:22px;font-weight:700;color:#B91C1C;">${d.oldBroadcastJobs}</div>
+                    <div style="font-size:11px;color:#8C8078;">Broadcast Job Lama</div>
+                </div>
+                <div style="background:#F5F3F0;padding:14px;border-radius:8px;text-align:center;">
+                    <div style="font-size:22px;font-weight:700;color:#B91C1C;">${d.oldBroadcastRecipients}</div>
+                    <div style="font-size:11px;color:#8C8078;">Log Penerima Lama</div>
+                </div>
+                <div style="background:#F5F3F0;padding:14px;border-radius:8px;text-align:center;">
+                    <div style="font-size:22px;font-weight:700;color:${urgencyColor};">${urgencyText}</div>
+                    <div style="font-size:11px;color:#8C8078;">Waktu Cleanup</div>
+                </div>
+            </div>
+            ${hasOldData ? `
+                <p style="font-size:13px;color:#5C534B;margin:0 0 12px;">Ada <strong>${d.totalOldRecords}</strong> data lebih dari ${d.cleanupDays} hari. Data customer & pembelian <strong>tidak akan dihapus</strong>, hanya chat log dan broadcast log.</p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    <button class="btn-primary" style="width:auto;font-size:13px;" onclick="exportThenDelete()">Export CSV lalu Hapus</button>
+                    <button class="btn-small" style="font-size:13px;padding:8px 16px;background:rgba(220,38,38,0.08);color:#DC2626;border:1px solid rgba(220,38,38,0.2);" onclick="deletePermanent()">Hapus Permanen</button>
+                    <button class="btn-small" style="font-size:13px;padding:8px 16px;" onclick="exportLogsOnly()">Export CSV Saja</button>
+                </div>
+            ` : `<p class="muted" style="margin:0;">Tidak ada data lama yang perlu dibersihkan.</p>`}
+        `;
+
+        // Update banner di dashboard
+        updateCleanupBanner(d);
+    };
+
+    function updateCleanupBanner(d) {
+        const banner = document.getElementById('cleanupBanner');
+        if (!banner) return;
+
+        if (d.totalOldRecords > 0 && d.daysUntilCleanup !== null && d.daysUntilCleanup <= 7) {
+            banner.style.display = 'block';
+            const title = document.getElementById('cleanupBannerTitle');
+            const text = document.getElementById('cleanupBannerText');
+
+            if (d.daysUntilCleanup <= 0) {
+                banner.style.background = 'linear-gradient(135deg,#FEE2E2,#FECACA)';
+                banner.style.borderColor = '#DC2626';
+                title.textContent = 'Data Perlu Dihapus!';
+                title.style.color = '#DC2626';
+                text.style.color = '#DC2626';
+                text.textContent = `${d.totalOldRecords} data chat & broadcast sudah lebih dari ${d.cleanupDays} hari. Silakan export atau hapus untuk menghemat storage.`;
+            } else {
+                title.textContent = `Cleanup dalam ${d.daysUntilCleanup} hari`;
+                text.textContent = `${d.totalOldRecords} data chat & broadcast akan perlu dihapus. Klik "Kelola Data" untuk export atau hapus.`;
+            }
+        } else {
+            banner.style.display = 'none';
+        }
+    }
+
+    window.navigateToCleanup = function() {
+        // Navigate ke Chat Log page
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelector('[data-page="messages"]').classList.add('active');
+        document.getElementById('messagesPage').classList.add('active');
+        loadMessages();
+        loadCleanupStatus();
+    };
+
+    window.exportLogsOnly = async function() {
+        try {
+            const response = await fetch(`${API_URL}/admin/cleanup/export`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `backup-logs-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('Export berhasil! File CSV sudah didownload.');
+        } catch (e) {
+            alert('Gagal export: ' + e.message);
+        }
+    };
+
+    window.exportThenDelete = async function() {
+        if (!confirm('Data chat log & broadcast log yang lebih dari 30 hari akan di-export ke CSV lalu dihapus permanen. Lanjutkan?')) return;
+
+        // Export dulu
+        try {
+            const response = await fetch(`${API_URL}/admin/cleanup/export`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `backup-logs-${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            alert('Gagal export, hapus dibatalkan: ' + e.message);
+            return;
+        }
+
+        // Tunggu sebentar biar download mulai
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Lalu hapus
+        const res = await apiCall('/admin/cleanup/delete', { method: 'POST', body: '{}' });
+        if (res && res.success) {
+            alert(`Berhasil! ${res.deleted.total} data lama sudah dihapus.\n\nFile backup CSV sudah didownload.`);
+            loadCleanupStatus();
+            loadMessages();
+        } else {
+            alert('Export berhasil tapi gagal menghapus: ' + (res?.message || 'Unknown error'));
+        }
+    };
+
+    window.deletePermanent = async function() {
+        if (!confirm('PERHATIAN: Data chat log & broadcast log yang lebih dari 30 hari akan DIHAPUS PERMANEN tanpa backup. Yakin?')) return;
+        if (!confirm('Benar-benar yakin? Data tidak bisa dikembalikan.')) return;
+
+        const res = await apiCall('/admin/cleanup/delete', { method: 'POST', body: '{}' });
+        if (res && res.success) {
+            alert(`${res.deleted.total} data lama berhasil dihapus permanen.`);
+            loadCleanupStatus();
+            loadMessages();
+        } else {
+            alert('Gagal menghapus: ' + (res?.message || 'Unknown error'));
+        }
+    };
+
+    // Load cleanup status saat dashboard load
+    async function loadCleanupBanner() {
+        const res = await apiCall('/admin/cleanup/status');
+        if (res && res.success) updateCleanupBanner(res.data);
+    }
+
+    // --- Messages functions ---
 
     async function loadMessages() {
         const container = document.getElementById('messagesTable');
@@ -2241,6 +2415,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // ============================================
 
     loadDashboard();
+    loadCleanupBanner();
 }
 
 console.log('✅ Admin Panel initialized');
