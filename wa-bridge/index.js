@@ -444,6 +444,39 @@ app.get('/api/stats', authCheck, (req, res) => {
 });
 
 // ============================================
+// MEMORY LEAK PROTECTION
+// Auto-restart Chromium setiap 6 jam untuk cegah memory leak
+// ============================================
+const RESTART_INTERVAL = 6 * 60 * 60 * 1000; // 6 jam
+
+setInterval(async () => {
+    const memUsage = process.memoryUsage();
+    const ramMB = Math.round(memUsage.rss / 1024 / 1024);
+    console.log(`[MEMORY] RAM usage: ${ramMB} MB`);
+
+    // Force restart jika RAM > 400MB atau setiap 6 jam
+    if (ramMB > 400 || true) {
+        console.log('[MEMORY] Scheduled restart to prevent memory leak...');
+        try {
+            if (clientState.status === 'ready') {
+                await waClient.destroy().catch(() => {});
+                console.log('[MEMORY] Client destroyed, reinitializing...');
+                await waClient.initialize();
+                console.log('[MEMORY] Client reinitialized successfully');
+            }
+        } catch (err) {
+            console.error('[MEMORY] Restart failed:', err.message);
+        }
+    }
+}, RESTART_INTERVAL);
+
+// Monitor RAM setiap 5 menit (log saja)
+setInterval(() => {
+    const ramMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    console.log(`[MONITOR] RAM: ${ramMB} MB | Messages today: ${ANTI_BAN.sentCount}/${ANTI_BAN.dailyLimit} | Queue: ${messageQueue.length}`);
+}, 5 * 60 * 1000);
+
+// ============================================
 // START SERVER
 // ============================================
 app.listen(PORT, () => {
@@ -452,12 +485,14 @@ app.listen(PORT, () => {
   Cahaya Phone WA Bridge
   Running on port ${PORT}
 
-  Tips Anti-Banned:
+  Anti-Banned:
   - Delay 8-15 detik antar broadcast
   - Max ${ANTI_BAN.dailyLimit} pesan/hari
   - Variasi pesan otomatis dari backend
-  - Gunakan akun WA yang sudah lama
-  - Jangan spam ke nomor yang tidak kenal
+
+  Memory Protection:
+  - Auto-restart Chromium tiap 6 jam
+  - RAM monitor tiap 5 menit
 ========================================
     `);
 });
