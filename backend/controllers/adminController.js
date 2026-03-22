@@ -1381,8 +1381,31 @@ exports.updateWASettings = async (req, res) => {
 // ============================================
 // DATA CLEANUP (Chat Log & Broadcast Log)
 // ============================================
+//
+// Strategi cleanup (prioritas hemat database):
+// 1. admin_reset_tokens → hapus otomatis setiap request (used/expired)
+// 2. broadcast_recipients → hapus 30 hari setelah JOB SELESAI
+// 3. messages (chat log) → hapus > 30 hari
+// 4. broadcast_jobs → hapus 30 hari setelah selesai
+//
+// TIDAK PERNAH DIHAPUS: customers, purchases, invoices, google_tokens
 
-const CLEANUP_DAYS = 30; // Hapus data lebih dari 30 hari
+const CLEANUP_DAYS = 30;
+
+/**
+ * Auto-clean sampah setiap kali cleanup/status dipanggil
+ * Reset tokens yang used/expired langsung dihapus tanpa nunggu
+ */
+async function autoCleanTrash() {
+    try {
+        const { rowCount } = await db.query(
+            `DELETE FROM admin_reset_tokens WHERE used = TRUE OR expires_at < NOW()`
+        );
+        if (rowCount > 0) console.log(`🗑️ Auto-clean: ${rowCount} expired/used reset tokens deleted`);
+    } catch (e) {
+        console.warn('Auto-clean tokens failed:', e.message);
+    }
+}
 
 /**
  * Get cleanup status - berapa data lama, warning countdown
@@ -1390,25 +1413,33 @@ const CLEANUP_DAYS = 30; // Hapus data lebih dari 30 hari
  */
 exports.getCleanupStatus = async (req, res) => {
     try {
+        // Auto-clean sampah dulu
+        await autoCleanTrash();
+
         const cutoffDate = new Date();
         cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
 
-        // Hitung data lama
+        // Messages > 30 hari
         const { rows: [msgCount] } = await db.query(
             `SELECT COUNT(*) as total FROM messages WHERE sent_at < $1`,
             [cutoffDate]
         );
+
+        // Broadcast jobs yang SELESAI > 30 hari lalu
         const { rows: [bcastJobCount] } = await db.query(
-            `SELECT COUNT(*) as total FROM broadcast_jobs WHERE created_at < $1`,
+            `SELECT COUNT(*) as total FROM broadcast_jobs
+             WHERE status IN ('completed','stopped') AND created_at < $1`,
             [cutoffDate]
         );
+
+        // Broadcast recipients dari job yang SELESAI > 30 hari lalu
         const { rows: [bcastRecCount] } = await db.query(
             `SELECT COUNT(*) as total FROM broadcast_recipients
-             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE created_at < $1)`,
+             WHERE job_id IN (
+                SELECT id FROM broadcast_jobs
+                WHERE status IN ('completed','stopped') AND created_at < $1
+             )`,
             [cutoffDate]
-        );
-        const { rows: [resetCount] } = await db.query(
-            `SELECT COUNT(*) as total FROM admin_reset_tokens WHERE expires_at < NOW()`
         );
 
         // Cari tanggal data paling lama
@@ -1426,7 +1457,7 @@ exports.getCleanupStatus = async (req, res) => {
             daysUntilCleanup = Math.max(0, Math.ceil((cleanupDate - now) / (1000 * 60 * 60 * 24)));
         }
 
-        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total) + parseInt(resetCount.total);
+        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total);
 
         res.json({
             success: true,
@@ -1434,7 +1465,6 @@ exports.getCleanupStatus = async (req, res) => {
                 oldMessages: parseInt(msgCount.total),
                 oldBroadcastJobs: parseInt(bcastJobCount.total),
                 oldBroadcastRecipients: parseInt(bcastRecCount.total),
-                expiredTokens: parseInt(resetCount.total),
                 totalOldRecords,
                 cutoffDate: cutoffDate.toISOString(),
                 daysUntilCleanup,
@@ -1467,7 +1497,7 @@ exports.exportOldLogs = async (req, res) => {
             [cutoffDate]
         );
 
-        // Export broadcast jobs + recipients
+        // Export broadcast jobs (selesai) + recipients
         const { rows: broadcasts } = await db.query(
             `SELECT bj.id as job_id, bj.message as broadcast_message, bj.status as job_status,
                     bj.total, bj.sent, bj.failed, bj.created_at as job_date,
@@ -1475,7 +1505,7 @@ exports.exportOldLogs = async (req, res) => {
                     br.error, br.sent_at
              FROM broadcast_jobs bj
              LEFT JOIN broadcast_recipients br ON br.job_id = bj.id
-             WHERE bj.created_at < $1
+             WHERE bj.status IN ('completed','stopped') AND bj.created_at < $1
              ORDER BY bj.created_at ASC, br.id ASC`,
             [cutoffDate]
         );
@@ -1516,33 +1546,37 @@ exports.deleteOldLogs = async (req, res) => {
         const cutoffDate = new Date();
         cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
 
-        // Hapus broadcast recipients dulu (foreign key)
+        // 1. Hapus reset tokens (sampah, langsung hapus semua yg used/expired)
+        const { rowCount: tokenDeleted } = await db.query(
+            `DELETE FROM admin_reset_tokens WHERE used = TRUE OR expires_at < NOW()`
+        );
+
+        // 2. Hapus broadcast recipients dari job yang SELESAI > 30 hari
         const { rowCount: recDeleted } = await db.query(
             `DELETE FROM broadcast_recipients
-             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE created_at < $1)`,
+             WHERE job_id IN (
+                SELECT id FROM broadcast_jobs
+                WHERE status IN ('completed','stopped') AND created_at < $1
+             )`,
             [cutoffDate]
         );
 
-        // Hapus broadcast jobs
+        // 3. Hapus broadcast jobs yang SELESAI > 30 hari
         const { rowCount: jobDeleted } = await db.query(
-            `DELETE FROM broadcast_jobs WHERE created_at < $1`,
+            `DELETE FROM broadcast_jobs
+             WHERE status IN ('completed','stopped') AND created_at < $1`,
             [cutoffDate]
         );
 
-        // Hapus messages
+        // 4. Hapus messages > 30 hari
         const { rowCount: msgDeleted } = await db.query(
             `DELETE FROM messages WHERE sent_at < $1`,
             [cutoffDate]
         );
 
-        // Hapus expired reset tokens
-        const { rowCount: tokenDeleted } = await db.query(
-            `DELETE FROM admin_reset_tokens WHERE expires_at < NOW()`
-        );
-
         const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted;
 
-        console.log(`🗑️ Cleanup: ${msgDeleted} messages, ${jobDeleted} broadcast jobs, ${recDeleted} broadcast recipients, ${tokenDeleted} tokens deleted`);
+        console.log(`🗑️ Cleanup: ${msgDeleted} messages, ${jobDeleted} jobs, ${recDeleted} recipients, ${tokenDeleted} tokens`);
 
         res.json({
             success: true,
