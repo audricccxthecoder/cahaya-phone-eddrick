@@ -1,3 +1,9 @@
+# Claude Code
+.claude/
+
+# Image folder
+image/
+
 # Dependencies
 node_modules/
 
