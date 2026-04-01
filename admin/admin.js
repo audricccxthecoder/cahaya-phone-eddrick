@@ -1492,22 +1492,33 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const isConnected = waRes && waRes.success && waRes.status === 'ready';
             const failedCount = (failedRes && failedRes.success) ? failedRes.count : 0;
 
-            if (!isConnected || failedCount > 0) {
+            const titleEl = banner.querySelector('strong');
+            const textEl = document.getElementById('waDisconnectText');
+
+            if (!isConnected) {
+                // WA terputus — banner MERAH
                 banner.style.display = 'block';
-                const countEl = document.getElementById('waFailedCount');
-                const textEl = document.getElementById('waDisconnectText');
-                if (!isConnected && failedCount > 0) {
-                    textEl.innerHTML = `WhatsApp terputus! Auto-reply tidak aktif. Ada <strong>${failedCount}</strong> pesan gagal terkirim.`;
-                } else if (!isConnected) {
-                    textEl.innerHTML = 'WhatsApp terputus! Auto-reply dan broadcast tidak aktif.';
+                banner.style.background = 'linear-gradient(135deg,#FEE2E2,#FECACA)';
+                banner.style.borderColor = '#DC2626';
+                titleEl.style.color = '#DC2626';
+                titleEl.textContent = 'WhatsApp Terputus!';
+                textEl.style.color = '#DC2626';
+                if (failedCount > 0) {
+                    textEl.innerHTML = `Auto-reply tidak aktif. Ada <strong>${failedCount}</strong> pesan gagal terkirim.`;
                 } else {
-                    banner.style.background = 'linear-gradient(135deg,#FEF3C7,#FDE68A)';
-                    banner.style.borderColor = '#F59E0B';
-                    textEl.innerHTML = `<span style="color:#92400E;">Ada <strong>${failedCount}</strong> pesan gagal terkirim. Buka WA Connect untuk kirim ulang.</span>`;
-                    textEl.style.color = '#92400E';
-                    banner.querySelector('strong').style.color = '#92400E';
+                    textEl.innerHTML = 'Auto-reply dan broadcast tidak aktif.';
                 }
+            } else if (failedCount > 0) {
+                // WA connected tapi ada pesan gagal — banner KUNING
+                banner.style.display = 'block';
+                banner.style.background = 'linear-gradient(135deg,#FEF3C7,#FDE68A)';
+                banner.style.borderColor = '#F59E0B';
+                titleEl.style.color = '#92400E';
+                titleEl.textContent = 'Pesan Gagal Terkirim';
+                textEl.style.color = '#92400E';
+                textEl.innerHTML = `Ada <strong>${failedCount}</strong> pesan gagal terkirim. Buka WA Connect untuk kirim ulang.`;
             } else {
+                // Semua OK — sembunyikan banner
                 banner.style.display = 'none';
             }
         } catch (e) {
