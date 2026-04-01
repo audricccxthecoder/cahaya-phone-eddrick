@@ -127,6 +127,59 @@ async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invoices_token ON invoices (token)`);
     console.log('✅ Table invoices created/verified');
 
+    // ============================================
+    // CLEANUP: Hapus duplikat & nomor WA internal tidak valid
+    // ============================================
+    console.log('Cleaning up invalid & duplicate customers...');
+
+    // Hapus customer dengan nomor WA internal (bukan nomor Indonesia valid)
+    // Nomor valid Indonesia: 62xxx, panjang 11-15 digit
+    const { rows: invalidRows } = await client.query(`
+      DELETE FROM customers
+      WHERE whatsapp !~ '^62[0-9]{9,13}$'
+        AND tipe = 'Chat Only'
+      RETURNING id, nama_lengkap, whatsapp
+    `);
+    if (invalidRows.length > 0) {
+      console.log(`  Removed ${invalidRows.length} Chat Only records with invalid phone numbers`);
+      invalidRows.forEach(r => console.log(`    - #${r.id} ${r.nama_lengkap} (${r.whatsapp})`));
+    }
+
+    // Hapus duplikat: keep record terlama (atau yang tipe='Belanja'), hapus sisanya
+    const { rows: dupRows } = await client.query(`
+      DELETE FROM customers
+      WHERE id IN (
+        SELECT id FROM (
+          SELECT id,
+            ROW_NUMBER() OVER (
+              PARTITION BY whatsapp
+              ORDER BY
+                CASE WHEN tipe = 'Belanja' THEN 0 ELSE 1 END,
+                created_at ASC
+            ) as rn
+          FROM customers
+        ) ranked
+        WHERE rn > 1
+      )
+      RETURNING id, nama_lengkap, whatsapp
+    `);
+    if (dupRows.length > 0) {
+      console.log(`  Removed ${dupRows.length} duplicate records (kept oldest/Belanja)`);
+      dupRows.forEach(r => console.log(`    - #${r.id} ${r.nama_lengkap} (${r.whatsapp})`));
+    }
+
+    // Tambah UNIQUE constraint pada kolom whatsapp (cegah duplikat di masa depan)
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'uq_customers_whatsapp'
+        ) THEN
+          ALTER TABLE customers ADD CONSTRAINT uq_customers_whatsapp UNIQUE (whatsapp);
+        END IF;
+      END $$
+    `);
+    console.log('✅ Unique constraint on whatsapp verified');
+
     // Ensure opted_in column exists and backfill NULLs
     console.log('Ensuring opted_in column...');
     await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS opted_in BOOLEAN DEFAULT TRUE`);

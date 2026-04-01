@@ -16,7 +16,7 @@
 
 const db = require('../config/database');
 const googleService = require('../config/google');
-const { sanitizePhone } = require('../utils/phoneUtils');
+const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
 
 /**
  * Handle incoming message dari WA Client (event internal, bukan HTTP)
@@ -29,8 +29,11 @@ exports.handleIncomingMessage = async (data) => {
         // PENTING: pakai sanitizePhone supaya format konsisten (628xxx)
         const cleanPhone = sanitizePhone(phoneNumber.replace(/\D/g, ''));
 
-        if (!cleanPhone || !cleanPhone.startsWith('62')) {
-            console.log(`[WEBHOOK] Invalid phone number: ${phoneNumber}, skipped`);
+        // Validasi ketat: harus nomor Indonesia valid (62xxx, 11-15 digit)
+        // Ini juga memfilter nomor WA internal (contoh: 188394495865076)
+        const phoneCheck = validatePhone(cleanPhone);
+        if (!phoneCheck.valid) {
+            console.log(`[WEBHOOK] Invalid phone number: ${phoneNumber} -> ${cleanPhone} (${phoneCheck.message}), skipped`);
             return { success: false, error: 'Invalid phone number' };
         }
 
@@ -63,24 +66,8 @@ exports.handleIncomingMessage = async (data) => {
 
             console.log(`[WEBHOOK] Existing customer: ${customerId} (${existing[0].tipe}) — ${currentStatus} -> ${customerStatus}`);
 
-            // Update nama dari pushname jika berubah (dan pushname ada isinya)
-            if (senderName && senderName !== existing[0].nama_lengkap && !existing[0].nama_lengkap.startsWith('Customer -')) {
-                // Hanya update nama jika nama sebelumnya bukan nama asli dari form
-                // Jika tipe = Belanja, nama dari form lebih akurat — jangan timpa
-                if (existing[0].tipe === 'Chat Only') {
-                    try {
-                        await googleService.saveContact({
-                            nama_lengkap: senderName,
-                            whatsapp: cleanPhone,
-                            tipe: 'Chat Only'
-                        });
-                        await db.query('UPDATE customers SET nama_lengkap = $1 WHERE id = $2', [senderName, customerId]);
-                        console.log(`[WEBHOOK] Nama updated: ${existing[0].nama_lengkap} -> ${senderName}`);
-                    } catch (gcErr) {
-                        console.warn('[WEBHOOK] Google Contact update failed:', gcErr.message);
-                    }
-                }
-            }
+            // Nama Chat Only tetap "Customer - tanggal", tidak di-update dari pushname
+            // Nama Belanja dari form, juga tidak di-timpa
         } else {
             // ============================================
             // SKENARIO B: Customer BARU chat manual
@@ -98,22 +85,25 @@ exports.handleIncomingMessage = async (data) => {
                 source = 'TikTok';
             }
 
-            // Format nama: "Customer - DD/MM/YYYY" (bukan "Customer Baru")
+            // Format nama SELALU: "Customer - DD/MM/YYYY"
+            // Tidak pakai pushname — pushname bisa asal-asalan / beda orang sama nomor
             const now = new Date();
             const tanggal = now.toLocaleDateString('id-ID', {
                 day: '2-digit', month: '2-digit', year: 'numeric',
                 timeZone: 'Asia/Makassar'
             });
-            const customerName = senderName || `Customer - ${tanggal}`;
+            const customerName = `Customer - ${tanggal}`;
 
             const { rows: inserted } = await db.query(
                 `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe)
-                VALUES ($1, $2, $3, 'New', 'Chat Only') RETURNING id`,
+                VALUES ($1, $2, $3, 'New', 'Chat Only')
+                ON CONFLICT (whatsapp) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                RETURNING id, status`,
                 [customerName, cleanPhone, source]
             );
 
             customerId = inserted[0].id;
-            customerStatus = 'New';
+            customerStatus = inserted[0].status || 'New';
 
             console.log(`[WEBHOOK] New customer (Chat Only): ${customerId} — ${customerName} — NO auto-reply`);
 

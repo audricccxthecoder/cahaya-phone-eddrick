@@ -108,6 +108,14 @@ exports.submitForm = async (req, res) => {
                     nama_lengkap, nama_sales, merk_unit, tipe_unit, harga, qty,
                     tanggal_lahir, alamat, whatsapp, metode_pembayaran, tahu_dari, source, status, opted_in, tipe
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'Completed', $13, 'Belanja')
+                ON CONFLICT (whatsapp) DO UPDATE SET
+                    nama_lengkap = EXCLUDED.nama_lengkap, nama_sales = EXCLUDED.nama_sales,
+                    merk_unit = EXCLUDED.merk_unit, tipe_unit = EXCLUDED.tipe_unit,
+                    harga = EXCLUDED.harga, qty = EXCLUDED.qty,
+                    tanggal_lahir = EXCLUDED.tanggal_lahir, alamat = EXCLUDED.alamat,
+                    metode_pembayaran = EXCLUDED.metode_pembayaran, tahu_dari = EXCLUDED.tahu_dari,
+                    source = EXCLUDED.source, status = 'Completed', opted_in = EXCLUDED.opted_in,
+                    tipe = 'Belanja', updated_at = NOW()
                 RETURNING id`,
                 [
                     finalName, nama_sales || null, merk_unit || null, tipe_unit || null,
