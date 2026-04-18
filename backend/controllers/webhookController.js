@@ -196,3 +196,117 @@ exports.testWebhook = (req, res) => {
         timestamp: new Date().toISOString()
     });
 };
+
+// ============================================
+// WHATSAPP CLOUD API WEBHOOK
+// Meta akan kirim status update (sent, delivered, read) ke sini
+// ============================================
+
+/**
+ * Webhook Verification (GET) — dipanggil Meta saat setup webhook
+ * Meta kirim hub.mode, hub.verify_token, hub.challenge
+ * Kita harus respond dengan hub.challenge jika verify_token cocok
+ *
+ * GET /api/webhook/cloud
+ */
+exports.verifyCloudWebhook = (req, res) => {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    const verifyToken = process.env.WA_WEBHOOK_VERIFY_TOKEN;
+
+    if (mode === 'subscribe' && token === verifyToken) {
+        console.log('[Cloud Webhook] Verification successful');
+        return res.status(200).send(challenge);
+    }
+
+    console.warn('[Cloud Webhook] Verification failed — token mismatch');
+    return res.sendStatus(403);
+};
+
+/**
+ * Webhook Callback (POST) — menerima status update & pesan masuk dari Meta
+ * Status: sent → delivered → read → failed
+ * Juga menerima pesan masuk dari customer
+ *
+ * POST /api/webhook/cloud
+ */
+exports.handleCloudWebhook = async (req, res) => {
+    // PENTING: Meta mengharuskan kita respond 200 secepat mungkin
+    // Jika lambat, Meta akan retry dan bisa duplicate
+    res.sendStatus(200);
+
+    try {
+        const body = req.body;
+
+        // Validasi format Cloud API
+        if (body.object !== 'whatsapp_business_account') return;
+
+        const whatsappService = require('../config/whatsapp');
+
+        for (const entry of body.entry || []) {
+            for (const change of entry.changes || []) {
+                const value = change.value;
+                if (!value) continue;
+
+                // ============================================
+                // 1. STATUS UPDATE (sent/delivered/read/failed)
+                // ============================================
+                if (value.statuses) {
+                    for (const status of value.statuses) {
+                        const waMessageId = status.id;
+                        const statusType = status.status; // sent, delivered, read, failed
+                        const timestamp = status.timestamp;
+
+                        console.log(`[Cloud Webhook] Status: ${waMessageId} → ${statusType}`);
+
+                        // Update whatsapp_logs
+                        await whatsappService.updateMessageStatus(waMessageId, statusType, timestamp);
+
+                        // Jika FAILED, log error detail
+                        if (statusType === 'failed' && status.errors) {
+                            for (const err of status.errors) {
+                                console.error(`[Cloud Webhook] Message FAILED: ${err.code} — ${err.title}: ${err.message}`);
+
+                                // Update error detail di whatsapp_logs
+                                await db.query(
+                                    `UPDATE whatsapp_logs SET error_code = $1, error_detail = $2, updated_at = NOW()
+                                     WHERE wa_message_id = $3`,
+                                    [String(err.code), `${err.title}: ${err.message}`, waMessageId]
+                                ).catch(() => {});
+                            }
+                        }
+                    }
+                }
+
+                // ============================================
+                // 2. INCOMING MESSAGE (customer reply)
+                // ============================================
+                if (value.messages) {
+                    for (const msg of value.messages) {
+                        // Hanya handle text messages untuk saat ini
+                        if (msg.type !== 'text') continue;
+
+                        const phone = msg.from; // format: 628xxx
+                        const text = msg.text?.body || '';
+                        const senderName = value.contacts?.[0]?.profile?.name || '';
+
+                        console.log(`[Cloud Webhook] Incoming: ${senderName} (${phone}): ${text.substring(0, 50)}...`);
+
+                        // Proses seperti incoming message biasa
+                        await exports.handleIncomingMessage({
+                            sender: phone,
+                            message: text,
+                            pushname: senderName,
+                            source: 'cloud-api'
+                        });
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        // Jangan crash — kita sudah respond 200 di atas
+        console.error('[Cloud Webhook] Processing error:', error.message);
+    }
+};

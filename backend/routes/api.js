@@ -22,11 +22,17 @@ const authMiddleware = require('../config/authMiddleware');
 // Customer form submission
 router.post('/form-submit', formController.submitForm);
 
-// WhatsApp webhook
+// WhatsApp webhook (legacy — Fonnte/Wablas format)
 router.post('/webhook/whatsapp', webhookController.handleWhatsAppWebhook);
 router.get('/webhook/test', webhookController.testWebhook);
 
-// Quick-sync contacts (no login, secret key)
+// WhatsApp Cloud API webhook (Meta official)
+// GET = verification saat setup di Meta Dashboard
+// POST = status update (delivered/read) + incoming messages
+router.get('/webhook/cloud', webhookController.verifyCloudWebhook);
+router.post('/webhook/cloud', webhookController.handleCloudWebhook);
+
+// Quick-sync contacts (protected by secret key in Authorization header)
 router.get('/sync/contacts', adminController.quickSyncVCF);
 router.get('/sync/list', adminController.quickSyncList);
 router.post('/sync/contacts/selected', adminController.quickSyncSelected);
@@ -50,9 +56,6 @@ router.patch('/admin/credentials', authMiddleware, adminController.changeCredent
 router.post('/admin/forgot', adminController.forgotPassword);
 router.get('/admin/reset/validate', adminController.validateResetToken);
 router.post('/admin/reset', adminController.resetPassword);
-
-// Debug route (development only) - list admins
-router.get('/debug/admins', adminController.debugAdmins);
 
 // ============================================
 // PROTECTED ROUTES (Authentication required)
@@ -88,7 +91,7 @@ router.post('/admin/broadcast/resume', authMiddleware, adminController.resumeBro
 router.get('/admin/broadcast/status', authMiddleware, adminController.getBroadcastStatus);
 router.get('/admin/broadcast/daily-count', authMiddleware, adminController.getDailySentCount);
 
-// WA Bridge proxy routes (admin dashboard → WA Bridge service)
+// WA API routes (Fonnte)
 router.get('/admin/wa/status', authMiddleware, adminController.getWABridgeStatus);
 router.post('/admin/wa/auto-reply', authMiddleware, adminController.updateWAAutoReply);
 router.get('/admin/wa/auto-reply', authMiddleware, adminController.getWAAutoReply);
@@ -98,6 +101,7 @@ router.post('/admin/wa/settings', authMiddleware, adminController.updateWASettin
 router.get('/admin/wa/failed', authMiddleware, adminController.getFailedWA);
 router.post('/admin/wa/retry/:id', authMiddleware, adminController.retryWA);
 router.post('/admin/wa/retry-all', authMiddleware, adminController.retryAllWA);
+router.get('/admin/wa/log', authMiddleware, adminController.getWAMessageLog);
 
 // Birthday greetings
 router.get('/admin/birthday/today', authMiddleware, birthdayController.getTodayBirthdays);

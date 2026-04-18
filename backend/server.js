@@ -28,13 +28,17 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (mobile apps, curl, etc)
+        // Allow requests with no origin (mobile apps, curl, server-to-server)
         if (!origin) return callback(null, true);
-        // Allow all in dev, or check whitelist in production
-        if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        // Allow configured origins only (ALLOWED_ORIGINS di .env)
+        if (allowedOrigins.length === 0) {
+            // Dev mode: belum dikonfigurasi, allow all
             return callback(null, true);
         }
-        return callback(null, true); // Allow all for now
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -61,7 +65,7 @@ app.get('/api/health', async (req, res) => {
     try {
         const result = await db.query('SELECT NOW() as time');
         const whatsappService = require('./config/whatsapp');
-        const waStatus = whatsappService.getStatus();
+        const waStatus = await whatsappService.getStatus();
         res.json({
             status: 'OK',
             db: 'connected',
@@ -103,40 +107,32 @@ if (process.env.VERCEL) {
     app.listen(PORT, async () => {
         console.log(`
 ========================================
-  Cahaya Phone Backend + WA Bridge
+  Cahaya Phone Backend (WA Cloud API)
   Running on port ${PORT}
   Mode: PERSISTENT (Railway/Local)
 ========================================
         `);
 
-        // Initialize WhatsApp Client (HANYA di persistent server)
+        // Initialize WhatsApp Cloud API Service
         try {
-            const waClient = require('./config/wa-client');
             const whatsappService = require('./config/whatsapp');
-            const webhookController = require('./controllers/webhookController');
+            await whatsappService.loadSettings();
 
-            // Connect WA Client ke WhatsApp Service
-            whatsappService.setWAClient(waClient);
+            const status = await whatsappService.getStatus();
+            if (status.status === 'connected') {
+                console.log('[WA] Cloud API configured and ready');
+            } else {
+                console.warn('[WA] Cloud API not configured — set WA_PHONE_NUMBER_ID & WA_ACCESS_TOKEN in .env');
+            }
 
-            // WA Bridge BODOH: chat masuk → lapor ke Backend
-            // Backend yang handle semua logika (save DB, save Google Contact, dll)
-            waClient.on('message_received', async (data) => {
-                try {
-                    await webhookController.handleIncomingMessage(data);
-                } catch (err) {
-                    console.error('[WA] Failed to handle incoming message:', err.message);
-                }
-            });
-
-            // Initialize WA Client
-            await waClient.initialize();
-            console.log('[WA] WhatsApp client initialized');
+            // Start background worker (retry & auto-recovery)
+            const waWorker = require('./config/wa-worker');
+            await waWorker.start();
         } catch (err) {
-            console.error('[WA] Failed to initialize:', err.message);
-            console.log('[WA] Server will continue without WhatsApp. Use Fonnte fallback.');
+            console.error('[WA] Failed to initialize WhatsApp service:', err.message);
         }
 
-        // Birthday greeting cron — setiap hari jam 8 pagi WIB (01:00 UTC)
+        // Birthday greeting cron — setiap hari jam 8 pagi WITA
         const birthdayController = require('./controllers/birthdayController');
         cron.schedule('0 8 * * *', () => {
             console.log('[Cron] Running birthday check...');

@@ -454,24 +454,6 @@ exports.getMessages = async (req, res) => {
 };
 
 /**
- * Debug: list admins (development only)
- * GET /api/debug/admins
- */
-exports.debugAdmins = async (req, res) => {
-    if (process.env.NODE_ENV !== 'development') {
-        return res.status(403).json({ success: false, message: 'Not allowed' });
-    }
-
-    try {
-        const { rows } = await db.query('SELECT id, username, nama FROM admins');
-        res.json({ success: true, data: rows });
-    } catch (error) {
-        console.error('❌ Debug admins error:', error);
-        res.status(500).json({ success: false, message: 'Gagal mengambil admins' });
-    }
-};
-
-/**
  * Update admin profile (name)
  * PATCH /api/admin/profile
  */
@@ -788,11 +770,12 @@ exports.exportVCard = async (req, res) => {
  */
 exports.quickSyncVCF = async (req, res) => {
     try {
-        const { key, since } = req.query;
-        const syncKey = process.env.SYNC_SECRET || 'cahaya-sync-2026';
+        const { since } = req.query;
+        const syncKey = process.env.SYNC_SECRET;
+        const authHeader = req.headers['x-sync-key'] || req.query.key;
 
-        if (key !== syncKey) {
-            return res.status(403).json({ success: false, message: 'Invalid sync key' });
+        if (!syncKey || authHeader !== syncKey) {
+            return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
         let query = `SELECT nama_lengkap, whatsapp, created_at FROM customers ORDER BY created_at DESC`;
@@ -840,10 +823,12 @@ exports.quickSyncVCF = async (req, res) => {
  */
 exports.quickSyncList = async (req, res) => {
     try {
-        const { key, date } = req.query;
-        const syncKey = process.env.SYNC_SECRET || 'cahaya-sync-2026';
-        if (key !== syncKey) {
-            return res.status(403).json({ success: false, message: 'Invalid sync key' });
+        const { date } = req.query;
+        const syncKey = process.env.SYNC_SECRET;
+        const authHeader = req.headers['x-sync-key'] || req.query.key;
+
+        if (!syncKey || authHeader !== syncKey) {
+            return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
         let query, params;
@@ -869,10 +854,12 @@ exports.quickSyncList = async (req, res) => {
  */
 exports.quickSyncSelected = async (req, res) => {
     try {
-        const { key, ids } = req.body;
-        const syncKey = process.env.SYNC_SECRET || 'cahaya-sync-2026';
-        if (key !== syncKey) {
-            return res.status(403).json({ success: false, message: 'Invalid sync key' });
+        const { ids } = req.body;
+        const syncKey = process.env.SYNC_SECRET;
+        const authHeader = req.headers['x-sync-key'] || req.body.key;
+
+        if (!syncKey || authHeader !== syncKey) {
+            return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
         if (!ids || !ids.length) {
@@ -923,17 +910,25 @@ exports.getDailySentCount = async (req, res) => {
 };
 
 /**
- * Start broadcast (DB-backed, serverless-safe)
+ * Start broadcast (DB-backed, Cloud API template)
  * POST /api/admin/broadcast/start
- * Body: { message, source_filter? }
+ * Body: { template_name, template_language?, message?, source_filter?, merk_filter?, metode_filter? }
+ *
+ * Cloud API: broadcast HARUS pakai template (inisiasi percakapan)
+ * Field 'message' tetap disimpan sebagai catatan/label di broadcast_jobs
  */
 exports.startBroadcast = async (req, res) => {
     try {
-        const { message, source_filter, merk_filter, metode_filter } = req.body;
+        const { message, template_name, template_language, source_filter, merk_filter, metode_filter } = req.body;
 
-        if (!message || String(message).trim() === '') {
-            return res.status(400).json({ success: false, message: 'Pesan broadcast tidak boleh kosong' });
+        // Cloud API memerlukan template untuk broadcast
+        const broadcastTemplate = template_name || whatsappService.templates.broadcast;
+
+        if (!broadcastTemplate) {
+            return res.status(400).json({ success: false, message: 'Template name wajib untuk broadcast Cloud API' });
         }
+
+        const broadcastLabel = message || `[TEMPLATE] ${broadcastTemplate}`;
 
         // Check if there's already an active broadcast
         const { rows: active } = await db.query(
@@ -969,10 +964,10 @@ exports.startBroadcast = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Tidak ada customer opted-in untuk dibroadcast' });
         }
 
-        // Create broadcast job
+        // Create broadcast job (simpan template info di message field)
         const { rows: [job] } = await db.query(
             `INSERT INTO broadcast_jobs (message, source_filter, status, total) VALUES ($1, $2, 'running', $3) RETURNING id`,
-            [message.trim(), source_filter || null, customers.length]
+            [JSON.stringify({ template_name: broadcastTemplate, template_language: template_language || 'id', label: broadcastLabel }), source_filter || null, customers.length]
         );
 
         // Insert all recipients
@@ -1021,6 +1016,15 @@ exports.processBroadcast = async (req, res) => {
 
         const job = jobs[0];
 
+        // Parse template info dari job.message (JSON)
+        let templateInfo;
+        try {
+            templateInfo = JSON.parse(job.message);
+        } catch (e) {
+            // Fallback: old format (plain text) — kirim sebagai text
+            templateInfo = { template_name: whatsappService.templates.broadcast, template_language: 'id', label: job.message };
+        }
+
         // Anti-spam: send ONE message at a time with random delay
         const { rows: batch } = await db.query(
             `SELECT id, customer_id, customer_name, customer_phone FROM broadcast_recipients
@@ -1034,9 +1038,22 @@ exports.processBroadcast = async (req, res) => {
             // Anti-spam: random delay 3-8 seconds before sending
             await randomDelay(3000, 8000);
 
-            // Anti-spam: variasi pesan agar tidak identik
-            const message = variasiPesan(job.message, recipient.customer_name);
-            const result = await whatsappService.sendBroadcastMessage(recipient.customer_phone, message);
+            // Kirim via Cloud API template (broadcast = inisiasi percakapan)
+            const components = [
+                {
+                    type: 'body',
+                    parameters: [
+                        { type: 'text', text: recipient.customer_name || 'Kak' }
+                    ]
+                }
+            ];
+
+            const result = await whatsappService.sendBroadcastMessage(
+                recipient.customer_phone,
+                templateInfo.template_name,
+                templateInfo.template_language || 'id',
+                components
+            );
 
             const status = result.success ? 'sent' : 'failed';
 
@@ -1049,7 +1066,7 @@ exports.processBroadcast = async (req, res) => {
             // Log to messages table
             await db.query(
                 `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
-                [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] ${message}`]
+                [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] Template: ${templateInfo.template_name}`]
             ).catch(() => {});
 
             // Auto-advance: New → Contacted on success
@@ -1337,11 +1354,21 @@ exports.getTopBrands = async (req, res) => {
 // ============================================
 
 /**
- * Get WA Client connection status (QR, connected info, etc)
+ * Get WA Cloud API connection status
  * GET /api/admin/wa/status
  */
 exports.getWABridgeStatus = async (req, res) => {
-    res.json(whatsappService.getStatus());
+    try {
+        const status = await whatsappService.getStatus();
+
+        // Include worker queue status
+        const waWorker = require('../config/wa-worker');
+        const queueStatus = await waWorker.getQueueStatus();
+
+        res.json({ ...status, queue: queueStatus });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
 
 /**
@@ -1363,44 +1390,43 @@ exports.getWAAutoReply = async (req, res) => {
 };
 
 /**
- * Disconnect WhatsApp
+ * Disconnect WhatsApp (Fonnte: no-op, API selalu ready)
  * POST /api/admin/wa/disconnect
  */
 exports.disconnectWA = async (req, res) => {
-    try {
-        const waClient = require('../config/wa-client');
-        const result = await waClient.disconnect();
-        res.json(result);
-    } catch (err) {
-        res.json({ success: false, error: 'WA Client not available: ' + err.message });
-    }
+    res.json({ success: true, message: 'Fonnte API tidak perlu disconnect — selalu tersedia selama API key valid' });
 };
 
 /**
- * Restart WhatsApp client (regenerate QR)
+ * Restart WhatsApp (reload settings + restart worker)
  * POST /api/admin/wa/restart
  */
 exports.restartWA = async (req, res) => {
     try {
-        const waClient = require('../config/wa-client');
-        const result = await waClient.restart();
-        res.json(result);
+        await whatsappService.loadSettings();
+
+        // Restart worker (recover stuck messages)
+        const waWorker = require('../config/wa-worker');
+        waWorker.stop();
+        await waWorker.start();
+
+        const status = await whatsappService.getStatus();
+        res.json({ success: true, message: 'WA Service reloaded + worker restarted', ...status });
     } catch (err) {
-        res.json({ success: false, error: 'WA Client not available: ' + err.message });
+        res.json({ success: false, error: err.message });
     }
 };
 
 /**
- * Update WA Client settings (daily limit, etc)
+ * Update WA settings (daily limit, etc)
  * POST /api/admin/wa/settings
  */
 exports.updateWASettings = async (req, res) => {
     try {
-        const waClient = require('../config/wa-client');
-        const result = waClient.setDailyLimit(req.body.dailyLimit);
+        const result = await whatsappService.setDailyLimit(req.body.dailyLimit);
         res.json(result);
     } catch (err) {
-        res.json({ success: false, error: 'WA Client not available: ' + err.message });
+        res.json({ success: false, error: err.message });
     }
 };
 
@@ -1479,6 +1505,40 @@ exports.retryAllWA = async (req, res) => {
     }
 };
 
+/**
+ * Get WA message log (semua pengiriman WA tercatat di DB)
+ * GET /api/admin/wa/log?limit=50&status=failed
+ */
+exports.getWAMessageLog = async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+        const statusFilter = req.query.status;
+
+        let query = `SELECT id, phone, type, template_name, message_body, wa_message_id,
+                     status, retry_count, error_code, error_detail,
+                     created_at, sent_at, delivered_at, read_at
+                     FROM whatsapp_logs`;
+        const params = [];
+
+        if (statusFilter) {
+            query += ` WHERE status = $1`;
+            params.push(statusFilter);
+        }
+
+        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
+        params.push(limit);
+
+        const { rows } = await db.query(query, params);
+
+        // Daily stats
+        const stats = await whatsappService.getStats();
+
+        res.json({ success: true, data: rows, stats });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // ============================================
 // DATA CLEANUP (Chat Log & Broadcast Log)
 // ============================================
@@ -1488,6 +1548,8 @@ exports.retryAllWA = async (req, res) => {
 // 2. broadcast_recipients → hapus 30 hari setelah JOB SELESAI
 // 3. messages (chat log) → hapus > 30 hari
 // 4. broadcast_jobs → hapus 30 hari setelah selesai
+// 5. whatsapp_logs → hapus > 30 hari
+// 6. wa_daily_stats → hapus > 90 hari
 //
 // TIDAK PERNAH DIHAPUS: customers, purchases, invoices, google_tokens
 
@@ -1543,6 +1605,20 @@ exports.getCleanupStatus = async (req, res) => {
             [cutoffDate]
         );
 
+        // WA message log > 30 hari
+        const { rows: [waLogCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM whatsapp_logs WHERE created_at < $1`,
+            [cutoffDate]
+        );
+
+        // WA daily stats > 90 hari
+        const cutoff90 = new Date();
+        cutoff90.setDate(cutoff90.getDate() - 90);
+        const { rows: [waDailyCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM wa_daily_stats WHERE stat_date < $1`,
+            [cutoff90]
+        );
+
         // Cari tanggal data paling lama
         const { rows: [oldest] } = await db.query(
             `SELECT MIN(sent_at) as oldest_message FROM messages`
@@ -1558,7 +1634,7 @@ exports.getCleanupStatus = async (req, res) => {
             daysUntilCleanup = Math.max(0, Math.ceil((cleanupDate - now) / (1000 * 60 * 60 * 24)));
         }
 
-        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total);
+        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total) + parseInt(waLogCount.total) + parseInt(waDailyCount.total);
 
         res.json({
             success: true,
@@ -1566,6 +1642,8 @@ exports.getCleanupStatus = async (req, res) => {
                 oldMessages: parseInt(msgCount.total),
                 oldBroadcastJobs: parseInt(bcastJobCount.total),
                 oldBroadcastRecipients: parseInt(bcastRecCount.total),
+                oldWALogs: parseInt(waLogCount.total),
+                oldWADailyStats: parseInt(waDailyCount.total),
                 totalOldRecords,
                 cutoffDate: cutoffDate.toISOString(),
                 daysUntilCleanup,
@@ -1675,9 +1753,23 @@ exports.deleteOldLogs = async (req, res) => {
             [cutoffDate]
         );
 
-        const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted;
+        // 5. Hapus whatsapp_logs > 30 hari
+        const { rowCount: waLogDeleted } = await db.query(
+            `DELETE FROM whatsapp_logs WHERE created_at < $1`,
+            [cutoffDate]
+        );
 
-        console.log(`🗑️ Cleanup: ${msgDeleted} messages, ${jobDeleted} jobs, ${recDeleted} recipients, ${tokenDeleted} tokens`);
+        // 6. Hapus wa_daily_stats > 90 hari
+        const cutoff90 = new Date();
+        cutoff90.setDate(cutoff90.getDate() - 90);
+        const { rowCount: waDailyDeleted } = await db.query(
+            `DELETE FROM wa_daily_stats WHERE stat_date < $1`,
+            [cutoff90]
+        );
+
+        const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted;
+
+        console.log(`Cleanup: ${msgDeleted} messages, ${jobDeleted} jobs, ${recDeleted} recipients, ${tokenDeleted} tokens, ${waLogDeleted} wa_logs, ${waDailyDeleted} wa_daily`);
 
         res.json({
             success: true,
@@ -1687,6 +1779,8 @@ exports.deleteOldLogs = async (req, res) => {
                 broadcastJobs: jobDeleted,
                 broadcastRecipients: recDeleted,
                 expiredTokens: tokenDeleted,
+                waMessageLogs: waLogDeleted,
+                waDailyStats: waDailyDeleted,
                 total: totalDeleted
             }
         });

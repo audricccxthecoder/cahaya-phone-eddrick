@@ -268,6 +268,56 @@ async function migrate() {
     `);
     console.log('✅ Table app_settings created/verified');
 
+    // WhatsApp Logs — semua pengiriman WA dicatat di sini (Cloud API)
+    // Status flow: PENDING → SENT → DELIVERED → READ (atau FAILED)
+    // Worker akan retry FAILED otomatis sampai max_retries
+    console.log('Creating table: whatsapp_logs...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_logs (
+        id SERIAL PRIMARY KEY,
+        phone VARCHAR(20) NOT NULL,
+        type VARCHAR(20) DEFAULT 'template',
+        template_name VARCHAR(100),
+        template_language VARCHAR(10) DEFAULT 'id',
+        template_components JSONB DEFAULT '[]',
+        message_body TEXT,
+        wa_message_id VARCHAR(100),
+        status VARCHAR(20) DEFAULT 'PENDING',
+        retry_count INT DEFAULT 0,
+        max_retries INT DEFAULT 3,
+        next_retry_at TIMESTAMP,
+        error_code VARCHAR(50),
+        error_detail TEXT,
+        api_response JSONB,
+        priority VARCHAR(10) DEFAULT 'normal',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        sent_at TIMESTAMP,
+        delivered_at TIMESTAMP,
+        read_at TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_phone ON whatsapp_logs (phone)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_status ON whatsapp_logs (status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_created ON whatsapp_logs (created_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_retry ON whatsapp_logs (status, next_retry_at) WHERE status = 'FAILED' AND retry_count < max_retries`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_wa_msg_id ON whatsapp_logs (wa_message_id) WHERE wa_message_id IS NOT NULL`);
+    console.log('✅ Table whatsapp_logs created/verified');
+
+    // WA Daily Stats — counter harian persist di DB (tidak hilang saat restart)
+    console.log('Creating table: wa_daily_stats...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS wa_daily_stats (
+        id SERIAL PRIMARY KEY,
+        stat_date DATE NOT NULL UNIQUE,
+        sent_count INT DEFAULT 0,
+        failed_count INT DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wds_date ON wa_daily_stats (stat_date)`);
+    console.log('✅ Table wa_daily_stats created/verified');
+
     // Buat view statistik
     console.log('Creating view: customer_stats...');
     await client.query(`DROP VIEW IF EXISTS customer_stats`);

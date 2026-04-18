@@ -221,8 +221,8 @@ async function sendBirthdayMessage(customerId) {
             return { success: false, message: errorMsg, error: errorMsg };
         }
 
-        // Kirim via WhatsApp
-        const waResult = await whatsappService.sendMessage(customer.whatsapp, message);
+        // Kirim via WhatsApp Cloud API (template untuk inisiasi percakapan)
+        const waResult = await whatsappService.sendBirthdayGreeting(customer, message);
 
         // Waktu sekarang dalam WITA (bukan NOW() dari DB yang pakai UTC)
         const sentAtWITA = nowWITA();
