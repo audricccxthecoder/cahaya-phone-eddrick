@@ -999,15 +999,14 @@ exports.startBroadcast = async (req, res) => {
 };
 
 /**
- * Process next batch of broadcast messages (serverless-safe)
+ * Process broadcast — now backend-driven via wa-worker.js
+ * This endpoint just returns current status (backward compatibility)
  * POST /api/admin/broadcast/process
- * Sends up to 5 messages concurrently per call
  */
 exports.processBroadcast = async (req, res) => {
     try {
-        // Find active broadcast job
         const { rows: jobs } = await db.query(
-            `SELECT id, message FROM broadcast_jobs WHERE status = 'running' ORDER BY id DESC LIMIT 1`
+            `SELECT id, status FROM broadcast_jobs ORDER BY id DESC LIMIT 1`
         );
 
         if (jobs.length === 0) {
@@ -1015,81 +1014,9 @@ exports.processBroadcast = async (req, res) => {
         }
 
         const job = jobs[0];
-
-        // Parse template info dari job.message (JSON)
-        let templateInfo;
-        try {
-            templateInfo = JSON.parse(job.message);
-        } catch (e) {
-            // Fallback: old format (plain text) — kirim sebagai text
-            templateInfo = { template_name: whatsappService.templates.broadcast, template_language: 'id', label: job.message };
-        }
-
-        // Anti-spam: send ONE message at a time with random delay
-        const { rows: batch } = await db.query(
-            `SELECT id, customer_id, customer_name, customer_phone FROM broadcast_recipients
-             WHERE job_id = $1 AND status = 'pending' ORDER BY id ASC LIMIT 1`,
-            [job.id]
-        );
-
-        if (batch.length > 0) {
-            const recipient = batch[0];
-
-            // Anti-spam: random delay 3-8 seconds before sending
-            await randomDelay(3000, 8000);
-
-            // Kirim via Cloud API template (broadcast = inisiasi percakapan)
-            const components = [
-                {
-                    type: 'body',
-                    parameters: [
-                        { type: 'text', text: recipient.customer_name || 'Kak' }
-                    ]
-                }
-            ];
-
-            const result = await whatsappService.sendBroadcastMessage(
-                recipient.customer_phone,
-                templateInfo.template_name,
-                templateInfo.template_language || 'id',
-                components
-            );
-
-            const status = result.success ? 'sent' : 'failed';
-
-            // Update recipient status
-            await db.query(
-                `UPDATE broadcast_recipients SET status = $1, error = $2, sent_at = NOW() WHERE id = $3`,
-                [status, result.error || null, recipient.id]
-            );
-
-            // Log to messages table
-            await db.query(
-                `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
-                [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] Template: ${templateInfo.template_name}`]
-            ).catch(() => {});
-
-            // Auto-advance: New → Contacted on success
-            if (result.success) {
-                await db.query(
-                    `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
-                    [recipient.customer_id]
-                ).catch(() => {});
-            }
-
-            // Update job counters
-            const sentCount = result.success ? 1 : 0;
-            const failedCount = result.success ? 0 : 1;
-            await db.query(
-                `UPDATE broadcast_jobs SET sent = sent + $1, failed = failed + $2 WHERE id = $3`,
-                [sentCount, failedCount, job.id]
-            );
-        }
-
-        // Check if all done
         const { rows: [counts] } = await db.query(
             `SELECT
-                COUNT(*) FILTER (WHERE status = 'pending') as queued,
+                COUNT(*) FILTER (WHERE status IN ('pending', 'sending')) as queued,
                 COUNT(*) FILTER (WHERE status = 'sent') as sent,
                 COUNT(*) FILTER (WHERE status = 'failed') as failed,
                 COUNT(*) as total
@@ -1097,15 +1024,9 @@ exports.processBroadcast = async (req, res) => {
             [job.id]
         );
 
-        const allDone = parseInt(counts.queued) === 0;
-        if (allDone) {
-            await db.query(`UPDATE broadcast_jobs SET status = 'completed' WHERE id = $1`, [job.id]);
-        }
-
-        // Get recent log entries
         const { rows: recentLog } = await db.query(
             `SELECT customer_name as name, customer_phone as phone, status, error
-             FROM broadcast_recipients WHERE job_id = $1 AND status != 'pending'
+             FROM broadcast_recipients WHERE job_id = $1 AND status NOT IN ('pending', 'sending')
              ORDER BY sent_at DESC LIMIT 20`,
             [job.id]
         );
@@ -1117,14 +1038,13 @@ exports.processBroadcast = async (req, res) => {
             error: r.error
         }));
 
-        // Anti-spam: daily sent count for soft warning
         const dailySent = await getDailySentCount();
 
         res.json({
             success: true,
             status: {
-                running: !allDone,
-                paused: false,
+                running: job.status === 'running',
+                paused: job.status === 'paused',
                 total: parseInt(counts.total),
                 sent: parseInt(counts.sent),
                 failed: parseInt(counts.failed),
@@ -1146,10 +1066,10 @@ exports.processBroadcast = async (req, res) => {
  */
 exports.stopBroadcast = async (req, res) => {
     try {
-        await db.query(`UPDATE broadcast_jobs SET status = 'stopped' WHERE status = 'running'`);
+        await db.query(`UPDATE broadcast_jobs SET status = 'stopped' WHERE status IN ('running', 'paused')`);
         await db.query(
             `UPDATE broadcast_recipients SET status = 'skipped'
-             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status = 'stopped') AND status = 'pending'`
+             WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status = 'stopped') AND status IN ('pending', 'sending')`
         );
         res.json({ success: true, message: 'Broadcast dihentikan', status: { running: false, paused: false, total: 0, sent: 0, failed: 0, queued: 0, log: [] } });
     } catch (error) {
@@ -1787,5 +1707,29 @@ exports.deleteOldLogs = async (req, res) => {
     } catch (error) {
         console.error('❌ Delete logs error:', error);
         res.status(500).json({ success: false, message: 'Gagal menghapus data' });
+    }
+};
+
+// ============================================
+// AUDIT TRAIL
+// ============================================
+
+/**
+ * Get admin activity logs
+ * GET /api/admin/audit-log?limit=50
+ */
+exports.getAuditLog = async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+        const { rows } = await db.query(
+            `SELECT id, admin_username, action, detail, ip_address, created_at
+             FROM admin_activity_logs
+             ORDER BY created_at DESC LIMIT $1`,
+            [limit]
+        );
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error('❌ Audit log error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil audit log' });
     }
 };

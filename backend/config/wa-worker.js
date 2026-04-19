@@ -1,20 +1,3 @@
-// ============================================
-// WA WORKER — Background Retry & Auto-Recovery
-//
-// Berjalan di background setiap 15 detik:
-// 1. Retry pesan FAILED yang belum melebihi max_retries
-// 2. Recovery pesan PENDING yang stuck (server crash/restart)
-//
-// Exponential Backoff:
-// - Retry 1: +30 detik
-// - Retry 2: +2.5 menit
-// - Retry 3: +12.5 menit
-//
-// Self-Healing:
-// - Saat server start, otomatis cek PENDING/FAILED lama
-// - Pesan stuck > 5 menit di-reset ke PENDING untuk diproses ulang
-// ============================================
-
 const axios = require('axios');
 const db = require('./database');
 require('dotenv').config();
@@ -28,17 +11,14 @@ class WAWorker {
         this.intervalId = null;
         this.processing = false;
 
-        // Config
         this.phoneNumberId = process.env.WA_PHONE_NUMBER_ID;
         this.accessToken = process.env.WA_ACCESS_TOKEN;
-        this.checkInterval = 15000; // 15 detik
-        this.batchSize = 5; // proses max 5 pesan per cycle
+        this.checkInterval = 15000;
+        this.batchSize = 5;
         this.delayBetweenMessages = { min: 1000, max: 3000 };
+        this.broadcastDelay = { min: 3000, max: 8000 };
     }
 
-    // ============================================
-    // START WORKER
-    // ============================================
     async start() {
         if (this.isRunning) {
             console.log('[WA Worker] Already running');
@@ -50,12 +30,11 @@ class WAWorker {
         }
 
         this.isRunning = true;
-        console.log('[WA Worker] Started (interval: 15s)');
+        console.log('[WA Worker] Started (interval: 15s, broadcast: backend-driven)');
 
-        // Auto-recovery saat startup
         await this._recoverStuck();
+        await this._recoverStaleBroadcast();
 
-        // Main loop
         this.intervalId = setInterval(() => {
             if (!this.processing) {
                 this._cycle();
@@ -63,9 +42,6 @@ class WAWorker {
         }, this.checkInterval);
     }
 
-    // ============================================
-    // STOP WORKER
-    // ============================================
     stop() {
         if (this.intervalId) {
             clearInterval(this.intervalId);
@@ -75,13 +51,11 @@ class WAWorker {
         console.log('[WA Worker] Stopped');
     }
 
-    // ============================================
-    // MAIN CYCLE: retry failed + process pending
-    // ============================================
     async _cycle() {
         this.processing = true;
         try {
             await this._retryFailed();
+            await this._processBroadcast();
         } catch (err) {
             console.error('[WA Worker] Cycle error:', err.message);
         } finally {
@@ -90,14 +64,16 @@ class WAWorker {
     }
 
     // ============================================
-    // RETRY: Ambil pesan FAILED yang waktunya sudah tiba
+    // RETRY: FOR UPDATE SKIP LOCKED to prevent race conditions
     // ============================================
     async _retryFailed() {
         if (!this.phoneNumberId || !this.accessToken) return;
 
+        const client = await db.connect();
         try {
-            // Ambil pesan FAILED yang: retry_count < max_retries DAN next_retry_at sudah lewat
-            const { rows } = await db.query(
+            await client.query('BEGIN');
+
+            const { rows } = await client.query(
                 `SELECT id, phone, type, template_name, template_language, template_components, message_body, retry_count
                  FROM whatsapp_logs
                  WHERE status = 'FAILED'
@@ -105,27 +81,35 @@ class WAWorker {
                    AND next_retry_at IS NOT NULL
                    AND next_retry_at <= NOW()
                  ORDER BY next_retry_at ASC
-                 LIMIT $1`,
+                 LIMIT $1
+                 FOR UPDATE SKIP LOCKED`,
                 [this.batchSize]
             );
 
-            if (rows.length === 0) return;
+            if (rows.length === 0) {
+                await client.query('COMMIT');
+                return;
+            }
+
+            const ids = rows.map(r => r.id);
+            await client.query(
+                `UPDATE whatsapp_logs SET status = 'RETRYING', updated_at = NOW() WHERE id = ANY($1)`,
+                [ids]
+            );
+            await client.query('COMMIT');
 
             console.log(`[WA Worker] Retrying ${rows.length} failed message(s)...`);
 
             for (const msg of rows) {
                 try {
-                    // Build payload sesuai type
                     const payload = this._buildPayload(msg);
                     if (!payload) {
                         await this._markPermanentFail(msg.id, 'Cannot rebuild payload');
                         continue;
                     }
 
-                    // Delay antar pesan
                     await this._randomDelay(this.delayBetweenMessages.min, this.delayBetweenMessages.max);
 
-                    // Kirim via Cloud API
                     const result = await this._send(msg.id, msg.phone, payload);
 
                     if (result.success) {
@@ -135,27 +119,150 @@ class WAWorker {
                     }
                 } catch (err) {
                     console.error(`[WA Worker] Error retrying msg #${msg.id}:`, err.message);
+                    await db.query(
+                        `UPDATE whatsapp_logs SET status = 'FAILED', updated_at = NOW() WHERE id = $1`,
+                        [msg.id]
+                    ).catch(() => {});
                 }
             }
         } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
             console.error('[WA Worker] retryFailed error:', err.message);
+        } finally {
+            client.release();
         }
     }
 
     // ============================================
-    // RECOVERY: Reset pesan stuck saat server restart
+    // BROADCAST: Backend-driven processing loop
+    // No longer depends on frontend polling
+    // ============================================
+    async _processBroadcast() {
+        if (!this.phoneNumberId || !this.accessToken) return;
+
+        try {
+            const { rows: jobs } = await db.query(
+                `SELECT id, message FROM broadcast_jobs WHERE status = 'running' ORDER BY id ASC LIMIT 1`
+            );
+            if (jobs.length === 0) return;
+
+            const job = jobs[0];
+
+            let templateInfo;
+            try {
+                templateInfo = JSON.parse(job.message);
+            } catch (e) {
+                const whatsappService = require('./whatsapp');
+                templateInfo = { template_name: whatsappService.templates.broadcast, template_language: 'id', label: job.message };
+            }
+
+            const client = await db.connect();
+            let recipient;
+            try {
+                await client.query('BEGIN');
+                const { rows: batch } = await client.query(
+                    `SELECT id, customer_id, customer_name, customer_phone
+                     FROM broadcast_recipients
+                     WHERE job_id = $1 AND status = 'pending'
+                     ORDER BY id ASC LIMIT 1
+                     FOR UPDATE SKIP LOCKED`,
+                    [job.id]
+                );
+
+                if (batch.length === 0) {
+                    await client.query('COMMIT');
+                    await this._checkBroadcastComplete(job.id);
+                    return;
+                }
+
+                recipient = batch[0];
+                await client.query(
+                    `UPDATE broadcast_recipients SET status = 'sending' WHERE id = $1`,
+                    [recipient.id]
+                );
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK').catch(() => {});
+                console.error('[WA Worker] Broadcast lock error:', err.message);
+                return;
+            } finally {
+                client.release();
+            }
+
+            await this._randomDelay(this.broadcastDelay.min, this.broadcastDelay.max);
+
+            const whatsappService = require('./whatsapp');
+            const components = [
+                {
+                    type: 'body',
+                    parameters: [
+                        { type: 'text', text: recipient.customer_name || 'Kak' }
+                    ]
+                }
+            ];
+
+            const result = await whatsappService.sendBroadcastMessage(
+                recipient.customer_phone,
+                templateInfo.template_name,
+                templateInfo.template_language || 'id',
+                components
+            );
+
+            const status = result.success ? 'sent' : 'failed';
+
+            await db.query(
+                `UPDATE broadcast_recipients SET status = $1, error = $2, sent_at = NOW() WHERE id = $3`,
+                [status, result.error || null, recipient.id]
+            );
+
+            await db.query(
+                `INSERT INTO messages (customer_id, direction, message) VALUES ($1, 'out', $2)`,
+                [recipient.customer_id, `[BROADCAST][${status.toUpperCase()}] Template: ${templateInfo.template_name}`]
+            ).catch(() => {});
+
+            if (result.success) {
+                await db.query(
+                    `UPDATE customers SET status = 'Contacted' WHERE id = $1 AND status = 'New'`,
+                    [recipient.customer_id]
+                ).catch(() => {});
+            }
+
+            await db.query(
+                `UPDATE broadcast_jobs SET sent = sent + $1, failed = failed + $2 WHERE id = $3`,
+                [result.success ? 1 : 0, result.success ? 0 : 1, job.id]
+            );
+
+            await this._checkBroadcastComplete(job.id);
+
+        } catch (err) {
+            console.error('[WA Worker] Broadcast error:', err.message);
+        }
+    }
+
+    async _checkBroadcastComplete(jobId) {
+        const { rows: [counts] } = await db.query(
+            `SELECT COUNT(*) FILTER (WHERE status IN ('pending', 'sending')) as remaining
+             FROM broadcast_recipients WHERE job_id = $1`,
+            [jobId]
+        );
+        if (parseInt(counts.remaining) === 0) {
+            await db.query(`UPDATE broadcast_jobs SET status = 'completed' WHERE id = $1`, [jobId]);
+            console.log(`[WA Worker] Broadcast job #${jobId} completed`);
+        }
+    }
+
+    // ============================================
+    // RECOVERY: Reset stuck messages on server restart
     // ============================================
     async _recoverStuck() {
         try {
-            // Pesan PENDING yang sudah > 5 menit = stuck (server crash)
-            // Reset supaya worker bisa proses ulang
             const { rowCount } = await db.query(
                 `UPDATE whatsapp_logs SET
                     status = 'FAILED',
                     error_detail = 'Server restart — auto-recovery',
                     retry_count = LEAST(retry_count, max_retries - 1),
                     next_retry_at = NOW()
-                 WHERE status = 'PENDING'
+                 WHERE status IN ('PENDING', 'RETRYING')
                    AND created_at < NOW() - INTERVAL '5 minutes'`
             );
 
@@ -167,9 +274,21 @@ class WAWorker {
         }
     }
 
-    // ============================================
-    // INTERNAL: Build Cloud API payload dari DB record
-    // ============================================
+    async _recoverStaleBroadcast() {
+        try {
+            const { rowCount } = await db.query(
+                `UPDATE broadcast_recipients SET status = 'pending'
+                 WHERE status = 'sending'
+                   AND sent_at IS NULL`
+            );
+            if (rowCount > 0) {
+                console.log(`[WA Worker] Recovered ${rowCount} stale broadcast recipient(s)`);
+            }
+        } catch (err) {
+            console.error('[WA Worker] Broadcast recovery error:', err.message);
+        }
+    }
+
     _buildPayload(msg) {
         if (msg.type === 'template') {
             if (!msg.template_name) return null;
@@ -208,9 +327,6 @@ class WAWorker {
         return null;
     }
 
-    // ============================================
-    // INTERNAL: Send via Cloud API + update DB
-    // ============================================
     async _send(logId, phone, payload) {
         try {
             const url = `${GRAPH_API_BASE}/${this.phoneNumberId}/messages`;
@@ -225,7 +341,6 @@ class WAWorker {
 
             const waMessageId = response.data?.messages?.[0]?.id || null;
 
-            // Update status → SENT
             await db.query(
                 `UPDATE whatsapp_logs SET
                     status = 'SENT', wa_message_id = $1, api_response = $2,
@@ -235,7 +350,6 @@ class WAWorker {
                 [waMessageId, JSON.stringify(response.data), logId]
             );
 
-            // Increment daily counter
             await db.query(
                 `INSERT INTO wa_daily_stats (stat_date, sent_count)
                  VALUES ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Makassar')::date, 1)
@@ -250,11 +364,9 @@ class WAWorker {
             const errorDetail = errData?.message || error.message;
             const httpStatus = error.response?.status;
 
-            // Cek apakah masih bisa di-retry
             const retryable = this._isRetryable(errorCode, httpStatus);
 
             if (retryable) {
-                // Update retry count + next_retry_at (exponential backoff)
                 await db.query(
                     `UPDATE whatsapp_logs SET
                         status = 'FAILED',
@@ -267,7 +379,6 @@ class WAWorker {
                     [errorCode, errorDetail, error.response?.data ? JSON.stringify(error.response.data) : null, logId]
                 );
             } else {
-                // Permanent fail — set retry_count = max_retries supaya worker tidak coba lagi
                 await this._markPermanentFail(logId, `[${errorCode}] ${errorDetail}`);
             }
 
@@ -275,9 +386,6 @@ class WAWorker {
         }
     }
 
-    // ============================================
-    // INTERNAL: Mark as permanent fail
-    // ============================================
     async _markPermanentFail(logId, errorDetail) {
         await db.query(
             `UPDATE whatsapp_logs SET
@@ -288,9 +396,6 @@ class WAWorker {
         ).catch(err => console.warn('[WA Worker] markPermanentFail error:', err.message));
     }
 
-    // ============================================
-    // INTERNAL: Check retryable error
-    // ============================================
     _isRetryable(errorCode, httpStatus) {
         if (httpStatus === 429) return true;
         if (httpStatus >= 500) return true;
@@ -300,17 +405,11 @@ class WAWorker {
         return false;
     }
 
-    // ============================================
-    // INTERNAL: Random delay
-    // ============================================
     _randomDelay(min, max) {
         const delay = Math.floor(Math.random() * (max - min + 1)) + min;
         return new Promise(resolve => setTimeout(resolve, delay));
     }
 
-    // ============================================
-    // PUBLIC: Get worker status (untuk monitoring)
-    // ============================================
     async getQueueStatus() {
         try {
             const { rows: [counts] } = await db.query(

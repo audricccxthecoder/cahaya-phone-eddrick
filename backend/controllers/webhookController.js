@@ -39,6 +39,27 @@ exports.handleIncomingMessage = async (data) => {
 
         console.log(`[WEBHOOK] Processing: ${senderName} (${cleanPhone}): ${message.substring(0, 50)}...`);
 
+        // Opt-out: jika customer balas "STOP" / "BERHENTI", set opted_in = false
+        const optOutKeywords = ['stop', 'berhenti', 'unsubscribe', 'keluar'];
+        const lowerMsg = message.trim().toLowerCase();
+        if (optOutKeywords.includes(lowerMsg)) {
+            await db.query(
+                `UPDATE customers SET opted_in = FALSE, updated_at = NOW() WHERE whatsapp = $1`,
+                [cleanPhone]
+            );
+            console.log(`[WEBHOOK] Customer ${cleanPhone} opted out (keyword: "${lowerMsg}")`);
+        }
+
+        // Opt-in: jika customer balas "MULAI" / "START", set opted_in = true
+        const optInKeywords = ['start', 'mulai', 'subscribe', 'daftar'];
+        if (optInKeywords.includes(lowerMsg)) {
+            await db.query(
+                `UPDATE customers SET opted_in = TRUE, updated_at = NOW() WHERE whatsapp = $1`,
+                [cleanPhone]
+            );
+            console.log(`[WEBHOOK] Customer ${cleanPhone} opted back in (keyword: "${lowerMsg}")`);
+        }
+
         // Cari customer berdasarkan nomor HP (1 nomor = 1 customer)
         const { rows: existing } = await db.query(
             'SELECT id, nama_lengkap, status, tipe FROM customers WHERE whatsapp = $1 ORDER BY created_at DESC LIMIT 1',

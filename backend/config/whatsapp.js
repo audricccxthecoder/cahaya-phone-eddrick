@@ -105,12 +105,38 @@ class WhatsAppService {
     }
 
     // ============================================
-    // PUBLIC: Backward-compatible sendMessage
-    // Coba text dulu (24h window), kalau gagal → sudahi
-    // Untuk inisiasi percakapan, pakai sendTemplate langsung
+    // PUBLIC: Check if customer is within 24h messaging window
+    // Returns true if customer sent a message within the last 24 hours
+    // ============================================
+    async isWithin24hWindow(phone) {
+        const formattedNumber = sanitizePhone(phone);
+        try {
+            const { rows } = await db.query(
+                `SELECT 1 FROM messages m
+                 JOIN customers c ON c.id = m.customer_id
+                 WHERE c.whatsapp = $1 AND m.direction = 'in'
+                   AND m.sent_at > NOW() - INTERVAL '24 hours'
+                 LIMIT 1`,
+                [formattedNumber]
+            );
+            return rows.length > 0;
+        } catch (err) {
+            console.warn('[WA] 24h window check error:', err.message);
+            return false;
+        }
+    }
+
+    // ============================================
+    // PUBLIC: Send text with 24h window check
+    // Falls back to template if outside window
     // ============================================
     async sendMessage(phone, message) {
-        return this.sendText(phone, message);
+        const inWindow = await this.isWithin24hWindow(phone);
+        if (inWindow) {
+            return this.sendText(phone, message);
+        }
+        console.warn(`[WA] ${phone} outside 24h window — text message will likely fail. Use template instead.`);
+        return { success: false, error: 'Di luar 24h window. Gunakan template message.', outside_window: true };
     }
 
     // ============================================

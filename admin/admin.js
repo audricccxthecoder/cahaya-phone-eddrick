@@ -1979,41 +1979,37 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         broadcastStopBtn.disabled = !status.running && status.queued === 0;
     }
 
-    let broadcastProcessing = false; // flag to prevent double-processing
+    let broadcastProcessing = false;
+    let broadcastPollInterval = null;
 
-    // Process broadcast in batches (frontend drives the loop)
+    // Poll broadcast status from backend (backend-driven processing)
     async function processBroadcastLoop() {
         if (broadcastProcessing) return;
         broadcastProcessing = true;
         broadcastStartBtn.disabled = true;
 
-        let errorCount = 0;
-        const MAX_ERRORS = 5; // Stop after 5 consecutive errors
+        if (broadcastPollInterval) clearInterval(broadcastPollInterval);
 
-        while (broadcastProcessing) {
-            const res = await apiCall('/admin/broadcast/process', { method: 'POST', body: '{}' });
-            if (!res || !res.success) {
-                errorCount++;
-                if (errorCount >= MAX_ERRORS) {
-                    console.warn('⚠️ Broadcast loop stopped: too many consecutive errors');
-                    broadcastProcessing = false;
-                    break;
-                }
-                await new Promise(r => setTimeout(r, 3000));
-                continue;
-            }
-            errorCount = 0; // reset on success
+        broadcastPollInterval = setInterval(async () => {
+            const res = await apiCall('/admin/broadcast/status');
+            if (!res || !res.success) return;
+
             renderBroadcastStatus(res.status);
 
-            // Stop loop if broadcast is done or paused
-            if (!res.status.running || res.status.paused) {
+            if (!res.status.running && !res.status.paused) {
+                clearInterval(broadcastPollInterval);
+                broadcastPollInterval = null;
                 broadcastProcessing = false;
-                break;
             }
+        }, 5000);
+    }
 
-            // Server handles 3-8s random delay per message (anti-spam)
-            // No extra frontend delay needed
+    function stopBroadcastPoll() {
+        if (broadcastPollInterval) {
+            clearInterval(broadcastPollInterval);
+            broadcastPollInterval = null;
         }
+        broadcastProcessing = false;
     }
 
     broadcastStartBtn.addEventListener('click', async () => {
@@ -2052,7 +2048,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     });
 
     broadcastPauseBtn.addEventListener('click', async () => {
-        broadcastProcessing = false; // stop the loop
+        stopBroadcastPoll();
         const res = await apiCall('/admin/broadcast/pause', { method: 'POST', body: '{}' });
         if (res) {
             const s = await apiCall('/admin/broadcast/status');
@@ -2063,14 +2059,13 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     broadcastResumeBtn.addEventListener('click', async () => {
         const res = await apiCall('/admin/broadcast/resume', { method: 'POST', body: '{}' });
         if (res) {
-            // Restart the processing loop
             processBroadcastLoop();
         }
     });
 
     broadcastStopBtn.addEventListener('click', async () => {
         if (!confirm('Yakin mau menghentikan broadcast?')) return;
-        broadcastProcessing = false; // stop the loop
+        stopBroadcastPoll();
         const res = await apiCall('/admin/broadcast/stop', { method: 'POST', body: '{}' });
         if (res) {
             const s = await apiCall('/admin/broadcast/status');

@@ -318,6 +318,29 @@ async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wds_date ON wa_daily_stats (stat_date)`);
     console.log('✅ Table wa_daily_stats created/verified');
 
+    // Admin activity logs (audit trail)
+    console.log('Creating table: admin_activity_logs...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admin_activity_logs (
+        id SERIAL PRIMARY KEY,
+        admin_id INT REFERENCES admins(id) ON DELETE SET NULL,
+        admin_username VARCHAR(50) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        detail TEXT,
+        ip_address VARCHAR(45),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aal_admin ON admin_activity_logs (admin_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aal_action ON admin_activity_logs (action)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aal_created ON admin_activity_logs (created_at)`);
+    console.log('✅ Table admin_activity_logs created/verified');
+
+    // Ensure messages.channel column exists (for 24h window tracking)
+    console.log('Ensuring messages.channel column...');
+    await client.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS channel VARCHAR(20) DEFAULT 'whatsapp'`);
+    console.log('✅ Messages channel column verified');
+
     // Buat view statistik
     console.log('Creating view: customer_stats...');
     await client.query(`DROP VIEW IF EXISTS customer_stats`);
