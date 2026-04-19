@@ -180,6 +180,28 @@ async function migrate() {
     `);
     console.log('✅ Unique constraint on whatsapp verified');
 
+    // Ensure last_incoming_message_at column (for fast 24h window check)
+    console.log('Ensuring last_incoming_message_at column...');
+    await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS last_incoming_message_at TIMESTAMP`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_last_msg ON customers (last_incoming_message_at) WHERE last_incoming_message_at IS NOT NULL`);
+    // Backfill from messages table
+    await client.query(`
+      UPDATE customers c SET last_incoming_message_at = sub.last_msg
+      FROM (
+        SELECT customer_id, MAX(sent_at) as last_msg
+        FROM messages WHERE direction = 'in'
+        GROUP BY customer_id
+      ) sub
+      WHERE c.id = sub.customer_id AND c.last_incoming_message_at IS NULL
+    `);
+    console.log('✅ last_incoming_message_at column verified');
+
+    // Ensure wa_message_id column on messages (webhook idempotency)
+    console.log('Ensuring messages.wa_message_id column...');
+    await client.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS wa_message_id VARCHAR(100)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_wa_message_id ON messages (wa_message_id) WHERE wa_message_id IS NOT NULL`);
+    console.log('✅ messages.wa_message_id column verified');
+
     // Ensure opted_in column exists and backfill NULLs
     console.log('Ensuring opted_in column...');
     await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS opted_in BOOLEAN DEFAULT TRUE`);

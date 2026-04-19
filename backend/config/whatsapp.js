@@ -46,13 +46,21 @@ class WhatsAppService {
     // PUBLIC: Send Template Message (untuk inisiasi percakapan)
     // Ini yang dipakai untuk broadcast, auto-reply, birthday
     // ============================================
-    async sendTemplate(phone, templateName, language, components) {
+    async sendTemplate(phone, templateName, language, components, { skipOptCheck = false } = {}) {
         const formattedNumber = sanitizePhone(phone);
         if (!formattedNumber || !formattedNumber.startsWith('62')) {
             return { success: false, error: 'Invalid phone number', phone };
         }
 
-        // Insert ke DB sebagai PENDING (worker akan pickup atau langsung kirim)
+        // Guard: cek opted_in sebelum kirim (kecuali auto-reply form submit)
+        if (!skipOptCheck) {
+            const optedOut = await this._isOptedOut(formattedNumber);
+            if (optedOut) {
+                console.log(`[WA] Blocked: ${formattedNumber} has opted out`);
+                return { success: false, error: 'Customer telah opt-out dari broadcast', phone, opted_out: true };
+            }
+        }
+
         const logId = await this._insertLog({
             phone: formattedNumber,
             type: 'template',
@@ -112,10 +120,9 @@ class WhatsAppService {
         const formattedNumber = sanitizePhone(phone);
         try {
             const { rows } = await db.query(
-                `SELECT 1 FROM messages m
-                 JOIN customers c ON c.id = m.customer_id
-                 WHERE c.whatsapp = $1 AND m.direction = 'in'
-                   AND m.sent_at > NOW() - INTERVAL '24 hours'
+                `SELECT 1 FROM customers
+                 WHERE whatsapp = $1
+                   AND last_incoming_message_at > NOW() - INTERVAL '24 hours'
                  LIMIT 1`,
                 [formattedNumber]
             );
@@ -168,7 +175,8 @@ class WhatsAppService {
             }
         ];
 
-        return this.sendTemplate(customer.whatsapp, templateName, 'id', components);
+        // skipOptCheck: auto-reply form submit selalu kirim (customer baru isi form)
+        return this.sendTemplate(customer.whatsapp, templateName, 'id', components, { skipOptCheck: true });
     }
 
     // ============================================
@@ -481,6 +489,22 @@ class WhatsAppService {
 
         // Non-retryable: invalid number, template not found, parameter mismatch, etc.
         return false;
+    }
+
+    // ============================================
+    // INTERNAL: Check if customer opted out
+    // ============================================
+    async _isOptedOut(phone) {
+        try {
+            const { rows } = await db.query(
+                `SELECT 1 FROM customers WHERE whatsapp = $1 AND opted_in = FALSE LIMIT 1`,
+                [phone]
+            );
+            return rows.length > 0;
+        } catch (err) {
+            console.warn('[WA] opted_in check error:', err.message);
+            return false;
+        }
     }
 
     // ============================================

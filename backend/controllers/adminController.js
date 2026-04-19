@@ -1539,6 +1539,12 @@ exports.getCleanupStatus = async (req, res) => {
             [cutoff90]
         );
 
+        // Audit logs > 90 hari
+        const { rows: [auditCount] } = await db.query(
+            `SELECT COUNT(*) as total FROM admin_activity_logs WHERE created_at < $1`,
+            [cutoff90]
+        );
+
         // Cari tanggal data paling lama
         const { rows: [oldest] } = await db.query(
             `SELECT MIN(sent_at) as oldest_message FROM messages`
@@ -1554,7 +1560,7 @@ exports.getCleanupStatus = async (req, res) => {
             daysUntilCleanup = Math.max(0, Math.ceil((cleanupDate - now) / (1000 * 60 * 60 * 24)));
         }
 
-        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total) + parseInt(waLogCount.total) + parseInt(waDailyCount.total);
+        const totalOldRecords = parseInt(msgCount.total) + parseInt(bcastJobCount.total) + parseInt(bcastRecCount.total) + parseInt(waLogCount.total) + parseInt(waDailyCount.total) + parseInt(auditCount.total);
 
         res.json({
             success: true,
@@ -1564,6 +1570,7 @@ exports.getCleanupStatus = async (req, res) => {
                 oldBroadcastRecipients: parseInt(bcastRecCount.total),
                 oldWALogs: parseInt(waLogCount.total),
                 oldWADailyStats: parseInt(waDailyCount.total),
+                oldAuditLogs: parseInt(auditCount.total),
                 totalOldRecords,
                 cutoffDate: cutoffDate.toISOString(),
                 daysUntilCleanup,
@@ -1687,9 +1694,15 @@ exports.deleteOldLogs = async (req, res) => {
             [cutoff90]
         );
 
-        const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted;
+        // 7. Hapus admin_activity_logs > 90 hari
+        const { rowCount: auditDeleted } = await db.query(
+            `DELETE FROM admin_activity_logs WHERE created_at < $1`,
+            [cutoff90]
+        );
 
-        console.log(`Cleanup: ${msgDeleted} messages, ${jobDeleted} jobs, ${recDeleted} recipients, ${tokenDeleted} tokens, ${waLogDeleted} wa_logs, ${waDailyDeleted} wa_daily`);
+        const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted + auditDeleted;
+
+        console.log(`Cleanup: ${msgDeleted} messages, ${jobDeleted} jobs, ${recDeleted} recipients, ${tokenDeleted} tokens, ${waLogDeleted} wa_logs, ${waDailyDeleted} wa_daily, ${auditDeleted} audit_logs`);
 
         res.json({
             success: true,
@@ -1701,6 +1714,7 @@ exports.deleteOldLogs = async (req, res) => {
                 expiredTokens: tokenDeleted,
                 waMessageLogs: waLogDeleted,
                 waDailyStats: waDailyDeleted,
+                auditLogs: auditDeleted,
                 total: totalDeleted
             }
         });

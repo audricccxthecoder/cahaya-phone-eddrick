@@ -24,7 +24,7 @@ const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
  */
 exports.handleIncomingMessage = async (data) => {
     try {
-        const { sender: phoneNumber, message, pushname: senderName } = data;
+        const { sender: phoneNumber, message, pushname: senderName, wa_message_id: waMessageId } = data;
 
         // PENTING: pakai sanitizePhone supaya format konsisten (628xxx)
         const cleanPhone = sanitizePhone(phoneNumber.replace(/\D/g, ''));
@@ -70,18 +70,20 @@ exports.handleIncomingMessage = async (data) => {
         let customerStatus;
 
         if (existing.length > 0) {
-            // ============================================
-            // Customer SUDAH ADA (Chat Only atau Belanja)
-            // Cukup update status + simpan pesan. TIDAK bikin record baru.
-            // ============================================
             customerId = existing[0].id;
             const currentStatus = existing[0].status;
 
-            // Auto status transitions (hanya untuk status tertentu)
             if (['New', 'Inactive', 'Follow Up'].includes(currentStatus)) {
-                await db.query('UPDATE customers SET status = $1 WHERE id = $2', ['Contacted', customerId]);
+                await db.query(
+                    'UPDATE customers SET status = $1, last_incoming_message_at = NOW() WHERE id = $2',
+                    ['Contacted', customerId]
+                );
                 customerStatus = 'Contacted';
             } else {
+                await db.query(
+                    'UPDATE customers SET last_incoming_message_at = NOW() WHERE id = $1',
+                    [customerId]
+                );
                 customerStatus = currentStatus;
             }
 
@@ -116,9 +118,9 @@ exports.handleIncomingMessage = async (data) => {
             const customerName = `Customer - ${tanggal}`;
 
             const { rows: inserted } = await db.query(
-                `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe)
-                VALUES ($1, $2, $3, 'New', 'Chat Only')
-                ON CONFLICT (whatsapp) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                `INSERT INTO customers (nama_lengkap, whatsapp, source, status, tipe, last_incoming_message_at)
+                VALUES ($1, $2, $3, 'New', 'Chat Only', NOW())
+                ON CONFLICT (whatsapp) DO UPDATE SET updated_at = CURRENT_TIMESTAMP, last_incoming_message_at = NOW()
                 RETURNING id, status`,
                 [customerName, cleanPhone, source]
             );
@@ -144,10 +146,10 @@ exports.handleIncomingMessage = async (data) => {
             // WA Business bawaan yang handle reply.
         }
 
-        // Simpan pesan ke database
+        // Simpan pesan ke database (dengan wa_message_id untuk idempotency)
         await db.query(
-            'INSERT INTO messages (customer_id, direction, message) VALUES ($1, $2, $3)',
-            [customerId, 'in', message]
+            'INSERT INTO messages (customer_id, direction, message, wa_message_id) VALUES ($1, $2, $3, $4)',
+            [customerId, 'in', message, waMessageId || null]
         );
 
         console.log(`[WEBHOOK] Message saved for customer: ${customerId}`);
@@ -306,21 +308,33 @@ exports.handleCloudWebhook = async (req, res) => {
                 // ============================================
                 if (value.messages) {
                     for (const msg of value.messages) {
-                        // Hanya handle text messages untuk saat ini
                         if (msg.type !== 'text') continue;
 
-                        const phone = msg.from; // format: 628xxx
+                        const wamId = msg.id;
+                        const phone = msg.from;
                         const text = msg.text?.body || '';
                         const senderName = value.contacts?.[0]?.profile?.name || '';
 
+                        // Idempotency: skip jika wam_id sudah pernah diproses
+                        if (wamId) {
+                            const { rows: dup } = await db.query(
+                                `SELECT 1 FROM messages WHERE wa_message_id = $1 LIMIT 1`,
+                                [wamId]
+                            );
+                            if (dup.length > 0) {
+                                console.log(`[Cloud Webhook] Duplicate message skipped: ${wamId}`);
+                                continue;
+                            }
+                        }
+
                         console.log(`[Cloud Webhook] Incoming: ${senderName} (${phone}): ${text.substring(0, 50)}...`);
 
-                        // Proses seperti incoming message biasa
                         await exports.handleIncomingMessage({
                             sender: phone,
                             message: text,
                             pushname: senderName,
-                            source: 'cloud-api'
+                            source: 'cloud-api',
+                            wa_message_id: wamId
                         });
                     }
                 }
