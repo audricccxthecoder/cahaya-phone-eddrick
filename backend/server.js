@@ -107,25 +107,28 @@ if (process.env.VERCEL) {
     app.listen(PORT, async () => {
         console.log(`
 ========================================
-  Cahaya Phone Backend (WA Cloud API)
+  Cahaya Phone Backend (Baileys via wa-bridge)
   Running on port ${PORT}
   Mode: PERSISTENT (Railway/Local)
+  Bridge: ${process.env.WA_BRIDGE_URL || 'http://localhost:3001'}
 ========================================
         `);
 
-        // Initialize WhatsApp Cloud API Service
+        // Initialize WA service (HTTP adapter to wa-bridge)
         try {
             const whatsappService = require('./config/whatsapp');
             await whatsappService.loadSettings();
 
             const status = await whatsappService.getStatus();
             if (status.status === 'connected') {
-                console.log('[WA] Cloud API configured and ready');
+                console.log('[WA] Bridge connected and ready (Baileys)');
+            } else if (status.status === 'bridge_unreachable') {
+                console.warn('[WA] Bridge unreachable — set WA_BRIDGE_URL di .env dan pastikan wa-bridge running');
             } else {
-                console.warn('[WA] Cloud API not configured — set WA_PHONE_NUMBER_ID & WA_ACCESS_TOKEN in .env');
+                console.warn(`[WA] Bridge status: ${status.status} — scan QR di admin dashboard → WA Connect`);
             }
 
-            // Start background worker (retry & auto-recovery)
+            // Start anti-ban orchestrator
             const waWorker = require('./config/wa-worker');
             await waWorker.start();
         } catch (err) {

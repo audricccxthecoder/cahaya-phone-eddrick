@@ -1,14 +1,12 @@
 // ============================================
-// WHATSAPP SERVICE — Meta Cloud API (Official)
+// WHATSAPP SERVICE — HTTP adapter to wa-bridge (Baileys)
 //
-// Semua pengiriman WA lewat Cloud API resmi Meta.
-// Mendukung Template Message + Text Message.
-// Semua log disimpan ke database (survive restart).
-// Retry otomatis via wa-worker.js (exponential backoff).
+// Architecture:
+// - wa-bridge (Baileys) = thin transport service (sends one message at a time)
+// - This module = HTTP client + DB logging, called by controllers
+// - wa-worker.js = anti-ban orchestrator (warm-up, delay, break, working hours)
 //
-// PENTING Cloud API:
-// - Inisiasi percakapan (broadcast, auto-reply, birthday) → HARUS pakai Template
-// - Reply ke customer (dalam 24 jam window) → boleh pakai Text
+// All outgoing messages are logged to `whatsapp_logs` for audit and retry.
 // ============================================
 
 const axios = require('axios');
@@ -16,235 +14,202 @@ const db = require('./database');
 const { sanitizePhone } = require('../utils/phoneUtils');
 require('dotenv').config();
 
-// Cloud API base URL
-const GRAPH_API_VERSION = 'v21.0';
-const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
+const BRIDGE_URL = process.env.WA_BRIDGE_URL || 'http://localhost:3001';
+const BRIDGE_SECRET = process.env.WA_BRIDGE_SECRET || 'cahaya-phone-secret-key';
+
+const DEFAULT_AUTOREPLY = 'Halo {nama}, terima kasih telah menghubungi Cahaya Phone Gorontalo! 🙏\n\nData Anda sudah kami terima. Tim kami akan segera menghubungi Anda untuk proses selanjutnya.\n\nSalam hangat,\nCahaya Phone';
 
 class WhatsAppService {
     constructor() {
-        // Meta Cloud API config (dari .env)
-        this.phoneNumberId = process.env.WA_PHONE_NUMBER_ID;
-        this.accessToken = process.env.WA_ACCESS_TOKEN;
-        this.businessAccountId = process.env.WA_BUSINESS_ACCOUNT_ID;
-
-        // Anti-bot delays (tetap ada untuk broadcast, meskipun Cloud API official)
-        this.singleDelay = { min: 500, max: 1500 };
-        this.broadcastDelay = { min: 3000, max: 8000 };
-
-        // Daily limit (soft warning — Cloud API punya limit sendiri dari Meta)
-        this.dailyLimit = 250;
-
-        // Default template names (bisa diubah dari app_settings)
-        this.templates = {
-            autoReply: process.env.WA_TEMPLATE_AUTO_REPLY || 'terima_kasih_belanja',
-            birthday: process.env.WA_TEMPLATE_BIRTHDAY || 'ucapan_ulang_tahun',
-            broadcast: process.env.WA_TEMPLATE_BROADCAST || 'promo_info'
-        };
+        this.bridgeUrl = BRIDGE_URL;
+        this.dailyLimit = 200;
+        this._cache = { autoReplyMessage: DEFAULT_AUTOREPLY };
     }
 
     // ============================================
-    // PUBLIC: Send Template Message (untuk inisiasi percakapan)
-    // Ini yang dipakai untuk broadcast, auto-reply, birthday
+    // BRIDGE HTTP HELPERS
     // ============================================
-    async sendTemplate(phone, templateName, language, components, { skipOptCheck = false } = {}) {
+    async _bridgeCall(method, path, body = null, timeoutMs = 20000) {
+        try {
+            const res = await axios({
+                method,
+                url: `${this.bridgeUrl}${path}`,
+                data: body,
+                headers: { 'X-WA-Secret': BRIDGE_SECRET, 'Content-Type': 'application/json' },
+                timeout: timeoutMs
+            });
+            return res.data;
+        } catch (err) {
+            const status = err.response?.status;
+            const data = err.response?.data;
+            const msg = data?.error || err.message;
+            const wrapped = new Error(msg);
+            wrapped.bridgeStatus = status;
+            wrapped.bridgeData = data;
+            throw wrapped;
+        }
+    }
+
+    // ============================================
+    // PUBLIC: Send text (logged). All sends go through here.
+    // ============================================
+    async sendText(phone, message, { typing = true, category = 'text', skipOptCheck = false } = {}) {
         const formattedNumber = sanitizePhone(phone);
         if (!formattedNumber || !formattedNumber.startsWith('62')) {
             return { success: false, error: 'Invalid phone number', phone };
         }
 
-        // Guard: cek opted_in sebelum kirim (kecuali auto-reply form submit)
         if (!skipOptCheck) {
             const optedOut = await this._isOptedOut(formattedNumber);
             if (optedOut) {
-                console.log(`[WA] Blocked: ${formattedNumber} has opted out`);
-                return { success: false, error: 'Customer telah opt-out dari broadcast', phone, opted_out: true };
+                return { success: false, error: 'Customer telah opt-out', phone, opted_out: true };
             }
         }
 
         const logId = await this._insertLog({
             phone: formattedNumber,
-            type: 'template',
-            template_name: templateName,
-            template_language: language || 'id',
-            template_components: components || [],
-            message_body: `[TEMPLATE] ${templateName}`,
-            priority: 'normal'
+            type: category,
+            message_body: message
         });
 
-        // Kirim langsung (tidak nunggu worker — lebih responsif)
-        const result = await this._callCloudAPI(formattedNumber, {
-            messaging_product: 'whatsapp',
-            to: formattedNumber,
-            type: 'template',
-            template: {
-                name: templateName,
-                language: { code: language || 'id' },
-                components: components || []
-            }
-        }, logId);
-
-        return result;
-    }
-
-    // ============================================
-    // PUBLIC: Send Text Message (untuk reply dalam 24h window)
-    // ============================================
-    async sendText(phone, message) {
-        const formattedNumber = sanitizePhone(phone);
-        if (!formattedNumber || !formattedNumber.startsWith('62')) {
-            return { success: false, error: 'Invalid phone number', phone };
-        }
-
-        const logId = await this._insertLog({
-            phone: formattedNumber,
-            type: 'text',
-            message_body: message,
-            priority: 'normal'
-        });
-
-        const result = await this._callCloudAPI(formattedNumber, {
-            messaging_product: 'whatsapp',
-            to: formattedNumber,
-            type: 'text',
-            text: { body: message }
-        }, logId);
-
-        return result;
-    }
-
-    // ============================================
-    // PUBLIC: Check if customer is within 24h messaging window
-    // Returns true if customer sent a message within the last 24 hours
-    // ============================================
-    async isWithin24hWindow(phone) {
-        const formattedNumber = sanitizePhone(phone);
         try {
-            const { rows } = await db.query(
-                `SELECT 1 FROM customers
-                 WHERE whatsapp = $1
-                   AND last_incoming_message_at > NOW() - INTERVAL '24 hours'
-                 LIMIT 1`,
-                [formattedNumber]
-            );
-            return rows.length > 0;
+            const result = await this._bridgeCall('POST', '/api/send', {
+                phone: formattedNumber,
+                message,
+                typing
+            });
+            const waMessageId = result?.wa_message_id || null;
+            await this._updateLog(logId, 'SENT', waMessageId, result, null);
+            await this._incrementDailyCounter('sent');
+            return { success: true, phone: formattedNumber, wa_message_id: waMessageId };
         } catch (err) {
-            console.warn('[WA] 24h window check error:', err.message);
-            return false;
+            const errorCode = err.bridgeStatus ? String(err.bridgeStatus) : 'BRIDGE_ERR';
+            const errorDetail = err.message || 'Unknown error';
+            const retryable = this._isRetryable(errorCode, err.bridgeStatus);
+            await this._updateLogFailed(logId, errorCode, errorDetail, err.bridgeData, retryable);
+            await this._incrementDailyCounter('failed');
+            return { success: false, phone: formattedNumber, error: errorDetail, error_code: errorCode, retryable };
         }
     }
 
     // ============================================
-    // PUBLIC: Send text with 24h window check
-    // Falls back to template if outside window
+    // PUBLIC: Send with auto-reply fallback. No 24h window concept in Baileys.
+    // Kept for API compat with earlier Cloud API code.
     // ============================================
     async sendMessage(phone, message) {
-        const inWindow = await this.isWithin24hWindow(phone);
-        if (inWindow) {
-            return this.sendText(phone, message);
-        }
-        console.warn(`[WA] ${phone} outside 24h window — text message will likely fail. Use template instead.`);
-        return { success: false, error: 'Di luar 24h window. Gunakan template message.', outside_window: true };
+        return this.sendText(phone, message);
     }
 
     // ============================================
-    // PUBLIC: Send Broadcast (template, dengan delay)
+    // PUBLIC: Broadcast send (same as text — backend worker controls pacing)
     // ============================================
-    async sendBroadcastMessage(phone, templateName, language, components) {
-        const formattedNumber = sanitizePhone(phone);
-        if (!formattedNumber || !formattedNumber.startsWith('62')) {
-            return { success: false, error: 'Invalid phone number', phone };
-        }
-
-        // Anti-bot delay sebelum kirim
-        await this._randomDelay(this.broadcastDelay.min, this.broadcastDelay.max);
-
-        return this.sendTemplate(formattedNumber, templateName, language, components);
+    async sendBroadcastMessage(phone, message) {
+        return this.sendText(phone, message, { typing: true, category: 'broadcast' });
     }
 
     // ============================================
-    // PUBLIC: Auto-reply setelah form submit (pakai template)
+    // PUBLIC: Auto-reply after form submit
     // ============================================
     async sendAutoReply(customer) {
-        const templateName = this.templates.autoReply;
-        const components = [
-            {
-                type: 'body',
-                parameters: [
-                    { type: 'text', text: customer.nama_lengkap || 'Kak' }
-                ]
-            }
-        ];
-
-        // skipOptCheck: auto-reply form submit selalu kirim (customer baru isi form)
-        return this.sendTemplate(customer.whatsapp, templateName, 'id', components, { skipOptCheck: true });
+        const tmpl = await this._getAutoReplyTemplate();
+        const message = tmpl.replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
+        return this.sendText(customer.whatsapp, message, { typing: true, category: 'auto_reply', skipOptCheck: true });
     }
 
     // ============================================
-    // PUBLIC: Birthday greeting (pakai template)
+    // PUBLIC: Birthday greeting
     // ============================================
     async sendBirthdayGreeting(customer, customMessage) {
-        const templateName = this.templates.birthday;
-        const components = [
-            {
-                type: 'body',
-                parameters: [
-                    { type: 'text', text: customer.nama_lengkap || 'Kak' }
-                ]
-            }
-        ];
-
-        return this.sendTemplate(customer.whatsapp, templateName, 'id', components);
+        const message = (customMessage || '').replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
+        if (!message.trim()) return { success: false, error: 'Empty message' };
+        return this.sendText(customer.whatsapp, message, { typing: true, category: 'birthday' });
     }
 
     // ============================================
-    // PUBLIC: Check if API is configured
+    // PUBLIC: Check if number is registered on WhatsApp (via bridge)
     // ============================================
-    isConfigured() {
-        return !!(this.phoneNumberId && this.accessToken);
+    async isNumberRegistered(phone) {
+        const formattedNumber = sanitizePhone(phone);
+        if (!formattedNumber || !formattedNumber.startsWith('62')) {
+            return { registered: false, error: 'Nomor tidak valid' };
+        }
+        try {
+            const result = await this._bridgeCall('POST', '/api/check-number', { phone: formattedNumber }, 15000);
+            return { registered: !!result.registered, jid: result.jid };
+        } catch (err) {
+            // If bridge not connected, we can't check — assume registered so send can attempt
+            return { registered: true, unchecked: true, error: err.message };
+        }
     }
 
     // ============================================
-    // PUBLIC: Get status (untuk admin dashboard)
+    // PUBLIC: Bridge status (for admin dashboard)
     // ============================================
     async getStatus() {
-        const stats = await this.getDailyStats();
-        const configured = this.isConfigured();
+        try {
+            const result = await this._bridgeCall('GET', '/api/status', null, 5000);
+            const stats = await this.getDailyStats();
+            const connected = result.status === 'open';
 
-        return {
-            success: true,
-            status: configured ? 'connected' : 'not_configured',
-            mode: 'cloud_api',
-            info: configured ? {
-                provider: 'WhatsApp Cloud API (Meta)',
-                phoneNumberId: this.phoneNumberId,
-                apiConfigured: true
-            } : null,
-            messagesSentToday: stats.sent_count,
-            dailyLimit: this.dailyLimit,
-            lastError: configured ? null : 'WA_PHONE_NUMBER_ID dan WA_ACCESS_TOKEN belum dikonfigurasi'
-        };
+            return {
+                success: true,
+                status: connected ? 'connected' : result.status,
+                mode: 'baileys_bridge',
+                qr: result.qr || null,
+                qrNeeded: result.status === 'qr_pending',
+                info: result.info || null,
+                bridgeStatus: result.status,
+                lastError: result.lastError,
+                connectedAt: result.connectedAt,
+                disconnectedAt: result.disconnectedAt,
+                messagesSentToday: stats.sent_count,
+                messagesFailedToday: stats.failed_count,
+                dailyLimit: this.dailyLimit
+            };
+        } catch (err) {
+            const stats = await this.getDailyStats();
+            return {
+                success: false,
+                status: 'bridge_unreachable',
+                mode: 'baileys_bridge',
+                lastError: `Bridge tidak bisa dihubungi: ${err.message}. Cek WA_BRIDGE_URL.`,
+                messagesSentToday: stats.sent_count,
+                messagesFailedToday: stats.failed_count,
+                dailyLimit: this.dailyLimit
+            };
+        }
+    }
+
+    isConfigured() {
+        return !!(this.bridgeUrl && BRIDGE_SECRET);
     }
 
     // ============================================
-    // PUBLIC: Get daily stats from DB
+    // PUBLIC: Restart / disconnect bridge (admin actions)
+    // ============================================
+    async restartBridge() {
+        return this._bridgeCall('POST', '/api/restart');
+    }
+    async disconnectBridge() {
+        return this._bridgeCall('POST', '/api/disconnect');
+    }
+
+    // ============================================
+    // PUBLIC: Daily stats
     // ============================================
     async getDailyStats() {
         try {
             const { rows } = await db.query(
                 `SELECT sent_count, failed_count FROM wa_daily_stats
-                 WHERE stat_date = (CURRENT_DATE AT TIME ZONE 'Asia/Makassar')::date
+                 WHERE stat_date = (NOW() AT TIME ZONE 'Asia/Makassar')::date
                  LIMIT 1`
             );
             return rows.length > 0 ? rows[0] : { sent_count: 0, failed_count: 0 };
         } catch (err) {
-            console.warn('[WA] getDailyStats error:', err.message);
             return { sent_count: 0, failed_count: 0 };
         }
     }
 
-    // ============================================
-    // PUBLIC: Get stats summary
-    // ============================================
     async getStats() {
         const stats = await this.getDailyStats();
         return {
@@ -257,21 +222,7 @@ class WhatsAppService {
     }
 
     // ============================================
-    // PUBLIC: Check number registered (Cloud API — via contact check)
-    // ============================================
-    async isNumberRegistered(phoneNumber) {
-        const formattedNumber = sanitizePhone(phoneNumber);
-        if (!formattedNumber || !formattedNumber.startsWith('62')) {
-            return { registered: false, error: 'Nomor tidak valid' };
-        }
-
-        // Cloud API tidak punya endpoint cek nomor terdaftar secara langsung
-        // Kita anggap valid — kalau gagal kirim nanti API akan kasih error
-        return { registered: true, unchecked: true };
-    }
-
-    // ============================================
-    // PUBLIC: Update daily limit (persist di app_settings)
+    // PUBLIC: Settings
     // ============================================
     async setDailyLimit(limit) {
         if (limit && Number.isInteger(limit) && limit > 0) {
@@ -286,138 +237,87 @@ class WhatsAppService {
         return { success: true, dailyLimit: this.dailyLimit, sentToday: stats.sent_count };
     }
 
-    // ============================================
-    // PUBLIC: Load settings dari DB (dipanggil saat startup)
-    // ============================================
+    async setAutoReplyMessage(message) {
+        if (!message || !String(message).trim()) return { success: false, error: 'Pesan kosong' };
+        await db.query(
+            `INSERT INTO app_settings (key, value) VALUES ('form_autoreply_message', $1)
+             ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+            [String(message).trim()]
+        );
+        this._cache.autoReplyMessage = String(message).trim();
+        return { success: true };
+    }
+
     async loadSettings() {
         try {
             const { rows } = await db.query(
-                `SELECT key, value FROM app_settings WHERE key IN ('wa_daily_limit', 'wa_template_auto_reply', 'wa_template_birthday', 'wa_template_broadcast')`
+                `SELECT key, value FROM app_settings WHERE key IN ('wa_daily_limit', 'form_autoreply_message')`
             );
             for (const row of rows) {
                 if (row.key === 'wa_daily_limit') {
                     const val = parseInt(row.value);
                     if (val > 0) this.dailyLimit = val;
                 }
-                if (row.key === 'wa_template_auto_reply') this.templates.autoReply = row.value;
-                if (row.key === 'wa_template_birthday') this.templates.birthday = row.value;
-                if (row.key === 'wa_template_broadcast') this.templates.broadcast = row.value;
+                if (row.key === 'form_autoreply_message' && row.value) {
+                    this._cache.autoReplyMessage = row.value;
+                }
             }
-            console.log(`[WA] Settings loaded: dailyLimit=${this.dailyLimit}, templates=${JSON.stringify(this.templates)}`);
+            console.log(`[WA] Settings loaded: dailyLimit=${this.dailyLimit}, bridge=${this.bridgeUrl}`);
         } catch (err) {
             console.warn('[WA] loadSettings error:', err.message);
         }
     }
 
-    // ============================================
-    // PUBLIC: Update webhook status (dipanggil dari webhookController)
-    // ============================================
-    async updateMessageStatus(waMessageId, status, timestamp) {
+    async _getAutoReplyTemplate() {
+        // Try cache first
+        if (this._cache.autoReplyMessage) return this._cache.autoReplyMessage;
         try {
-            const statusMap = {
-                sent: { col: 'sent_at', status: 'SENT' },
-                delivered: { col: 'delivered_at', status: 'DELIVERED' },
-                read: { col: 'read_at', status: 'READ' },
-                failed: { col: null, status: 'FAILED' }
-            };
-
-            const mapping = statusMap[status];
-            if (!mapping) return;
-
-            const ts = timestamp ? new Date(timestamp * 1000) : new Date();
-
-            if (mapping.col) {
-                await db.query(
-                    `UPDATE whatsapp_logs SET status = $1, ${mapping.col} = $2, updated_at = NOW()
-                     WHERE wa_message_id = $3 AND status != 'FAILED'`,
-                    [mapping.status, ts, waMessageId]
-                );
-            } else {
-                await db.query(
-                    `UPDATE whatsapp_logs SET status = $1, updated_at = NOW()
-                     WHERE wa_message_id = $2`,
-                    [mapping.status, waMessageId]
-                );
-            }
-        } catch (err) {
-            console.warn('[WA] updateMessageStatus error:', err.message);
+            const { rows } = await db.query(
+                `SELECT value FROM app_settings WHERE key = 'form_autoreply_message' LIMIT 1`
+            );
+            const msg = rows[0]?.value || DEFAULT_AUTOREPLY;
+            this._cache.autoReplyMessage = msg;
+            return msg;
+        } catch (_) {
+            return DEFAULT_AUTOREPLY;
         }
     }
 
     // ============================================
-    // INTERNAL: Insert log ke database
+    // PUBLIC (noop for compat — Baileys has no delivery webhooks like Cloud API)
     // ============================================
-    async _insertLog({ phone, type, template_name, template_language, template_components, message_body, priority }) {
+    async updateMessageStatus(_waMessageId, _status, _timestamp) {
+        // Baileys can emit message status events, but we don't wire them.
+        // Kept as no-op so existing callers don't break.
+    }
+
+    // ============================================
+    // INTERNAL
+    // ============================================
+    async _insertLog({ phone, type, message_body }) {
         try {
             const { rows } = await db.query(
-                `INSERT INTO whatsapp_logs (phone, type, template_name, template_language, template_components, message_body, priority, status)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING')
+                `INSERT INTO whatsapp_logs (phone, type, message_body, status, priority)
+                 VALUES ($1, $2, $3, 'PENDING', 'normal')
                  RETURNING id`,
-                [phone, type, template_name || null, template_language || 'id',
-                 JSON.stringify(template_components || []), message_body || null, priority || 'normal']
+                [phone, type || 'text', message_body || null]
             );
             return rows[0].id;
         } catch (err) {
-            console.error('[WA] Insert log failed:', err.message);
+            console.warn('[WA] Insert log failed:', err.message);
             return null;
         }
     }
 
-    // ============================================
-    // INTERNAL: Call WhatsApp Cloud API
-    // ============================================
-    async _callCloudAPI(phone, payload, logId) {
-        if (!this.isConfigured()) {
-            const error = 'WA Cloud API belum dikonfigurasi (WA_PHONE_NUMBER_ID / WA_ACCESS_TOKEN)';
-            await this._updateLog(logId, 'FAILED', null, null, error);
-            return { success: false, phone, error };
-        }
-
-        try {
-            const url = `${GRAPH_API_BASE}/${this.phoneNumberId}/messages`;
-
-            const response = await axios.post(url, payload, {
-                headers: {
-                    'Authorization': `Bearer ${this.accessToken}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 15000
-            });
-
-            const waMessageId = response.data?.messages?.[0]?.id || null;
-
-            await this._updateLog(logId, 'SENT', waMessageId, response.data, null);
-            await this._incrementDailyCounter('sent');
-
-            console.log(`[WA SENT] ${phone} (wa_id: ${waMessageId})`);
-            return { success: true, phone, wa_message_id: waMessageId, data: response.data };
-
-        } catch (error) {
-            const errData = error.response?.data?.error;
-            const errorCode = errData?.code || error.code || 'UNKNOWN';
-            const errorDetail = errData?.message || errData?.error_data?.details || error.message;
-
-            // Tentukan apakah bisa di-retry
-            const retryable = this._isRetryable(errorCode, error.response?.status);
-
-            await this._updateLogFailed(logId, errorCode, errorDetail, error.response?.data, retryable);
-            await this._incrementDailyCounter('failed');
-
-            console.error(`[WA FAIL] ${phone}: [${errorCode}] ${errorDetail}`);
-            return { success: false, phone, error: errorDetail, error_code: errorCode, retryable };
-        }
-    }
-
-    // ============================================
-    // INTERNAL: Update log status
-    // ============================================
     async _updateLog(logId, status, waMessageId, apiResponse, error) {
         if (!logId) return;
         try {
             await db.query(
-                `UPDATE whatsapp_logs SET status = $1, wa_message_id = $2, api_response = $3,
-                 error_detail = $4, sent_at = CASE WHEN $1 = 'SENT' THEN NOW() ELSE sent_at END,
-                 updated_at = NOW()
+                `UPDATE whatsapp_logs SET
+                    status = $1, wa_message_id = $2, api_response = $3,
+                    error_detail = $4,
+                    sent_at = CASE WHEN $1 = 'SENT' THEN NOW() ELSE sent_at END,
+                    updated_at = NOW()
                  WHERE id = $5`,
                 [status, waMessageId, apiResponse ? JSON.stringify(apiResponse) : null, error, logId]
             );
@@ -426,14 +326,10 @@ class WhatsAppService {
         }
     }
 
-    // ============================================
-    // INTERNAL: Update log as FAILED with retry info
-    // ============================================
     async _updateLogFailed(logId, errorCode, errorDetail, apiResponse, retryable) {
         if (!logId) return;
         try {
             if (retryable) {
-                // Exponential backoff: 30s, 2m, 10m
                 await db.query(
                     `UPDATE whatsapp_logs SET
                         status = 'FAILED',
@@ -441,13 +337,12 @@ class WhatsAppService {
                         error_detail = $2,
                         api_response = $3,
                         retry_count = retry_count + 1,
-                        next_retry_at = NOW() + (POWER(5, retry_count + 1) || ' seconds')::interval,
+                        next_retry_at = NOW() + (POWER(5, LEAST(retry_count + 1, 4)) || ' seconds')::interval,
                         updated_at = NOW()
                      WHERE id = $4`,
                     [errorCode, errorDetail, apiResponse ? JSON.stringify(apiResponse) : null, logId]
                 );
             } else {
-                // Tidak bisa retry — tandai permanent fail
                 await db.query(
                     `UPDATE whatsapp_logs SET
                         status = 'FAILED',
@@ -465,35 +360,15 @@ class WhatsAppService {
         }
     }
 
-    // ============================================
-    // INTERNAL: Check if error is retryable
-    // ============================================
     _isRetryable(errorCode, httpStatus) {
-        // Rate limit → retry
+        // Bridge unreachable / timeout → retry
+        if (!httpStatus || httpStatus === 503 || httpStatus === 502 || httpStatus === 504) return true;
         if (httpStatus === 429) return true;
-        if (errorCode === 130429) return true; // Rate limit hit
-
-        // Server error → retry
         if (httpStatus >= 500) return true;
-
-        // Network error → retry
-        if (['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND'].includes(errorCode)) return true;
-
-        // Cloud API specific retryable errors
-        const retryableCodes = [
-            131026, // Message undeliverable (temporary)
-            131047, // Re-engagement message limit
-            131053, // Media upload error
-        ];
-        if (retryableCodes.includes(Number(errorCode))) return true;
-
-        // Non-retryable: invalid number, template not found, parameter mismatch, etc.
+        if (['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'ECONNREFUSED', 'BRIDGE_ERR'].includes(errorCode)) return true;
         return false;
     }
 
-    // ============================================
-    // INTERNAL: Check if customer opted out
-    // ============================================
     async _isOptedOut(phone) {
         try {
             const { rows } = await db.query(
@@ -502,33 +377,21 @@ class WhatsAppService {
             );
             return rows.length > 0;
         } catch (err) {
-            console.warn('[WA] opted_in check error:', err.message);
             return false;
         }
     }
 
-    // ============================================
-    // INTERNAL: Increment daily counter di DB
-    // ============================================
     async _incrementDailyCounter(type) {
         try {
             const column = type === 'sent' ? 'sent_count' : 'failed_count';
             await db.query(
                 `INSERT INTO wa_daily_stats (stat_date, ${column})
-                 VALUES ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Makassar')::date, 1)
+                 VALUES ((NOW() AT TIME ZONE 'Asia/Makassar')::date, 1)
                  ON CONFLICT (stat_date) DO UPDATE SET ${column} = wa_daily_stats.${column} + 1, updated_at = NOW()`
             );
         } catch (err) {
             console.warn('[WA] Increment daily counter failed:', err.message);
         }
-    }
-
-    // ============================================
-    // INTERNAL: Random delay (anti-bot)
-    // ============================================
-    _randomDelay(min, max) {
-        const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-        return new Promise(resolve => setTimeout(resolve, delay));
     }
 }
 

@@ -165,14 +165,11 @@ exports.getHistory = async (req, res) => {
 };
 
 /**
- * Helper: Generate waktu sekarang dalam zona WITA (Asia/Makassar) sebagai ISO string
- */
-function nowWITA() {
-    return new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Makassar' }).replace(' ', 'T');
-}
-
-/**
  * Internal: Kirim pesan birthday ke 1 customer
+ *
+ * NOTE: Kolom sent_at disimpan sebagai TIMESTAMP UTC murni (pakai NOW()).
+ * Frontend yang konversi ke WITA via toLocaleString({ timeZone: 'Asia/Makassar' }).
+ * JANGAN pernah simpan string lokal WITA — akan kena double-shift saat dibaca.
  */
 async function sendBirthdayMessage(customerId) {
     try {
@@ -221,28 +218,24 @@ async function sendBirthdayMessage(customerId) {
             return { success: false, message: errorMsg, error: errorMsg };
         }
 
-        // Kirim via WhatsApp Cloud API (template untuk inisiasi percakapan)
+        // Kirim via WA bridge (Baileys)
         const waResult = await whatsappService.sendBirthdayGreeting(customer, message);
 
-        // Waktu sekarang dalam WITA (bukan NOW() dari DB yang pakai UTC)
-        const sentAtWITA = nowWITA();
-
-        // Log ke database
+        // Log ke database — sent_at pakai NOW() (UTC), frontend konversi ke WITA
         if (waResult.success) {
             await db.query(`
                 INSERT INTO birthday_greetings (customer_id, greeting_year, message, status, sent_at)
-                VALUES ($1, $2, $3, 'sent', $4)
+                VALUES ($1, $2, $3, 'sent', NOW())
                 ON CONFLICT (customer_id, greeting_year) DO UPDATE
-                SET status = 'sent', message = $3, sent_at = $4
-            `, [customerId, year, message, sentAtWITA]);
+                SET status = 'sent', message = $3, sent_at = NOW()
+            `, [customerId, year, message]);
 
-            // Log ke messages table juga
             await db.query(`
                 INSERT INTO messages (customer_id, direction, message, sent_at)
-                VALUES ($1, 'out', $2, $3)
-            `, [customerId, message, sentAtWITA]);
+                VALUES ($1, 'out', $2, NOW())
+            `, [customerId, message]);
 
-            console.log(`[Birthday] ✅ Sent to ${customer.nama_lengkap} (${customer.whatsapp}) at ${sentAtWITA} WITA`);
+            console.log(`[Birthday] ✅ Sent to ${customer.nama_lengkap} (${customer.whatsapp})`);
         } else {
             await db.query(`
                 INSERT INTO birthday_greetings (customer_id, greeting_year, message, status, error)

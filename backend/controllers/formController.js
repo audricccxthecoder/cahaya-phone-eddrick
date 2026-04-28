@@ -150,8 +150,20 @@ exports.submitForm = async (req, res) => {
         });
 
         // Background: kirim WA auto-reply (tidak blocking response)
+        // Guard: cek toggle form_autoreply_enabled. Default ON kalau belum di-set.
         (async () => {
             try {
+                const { rows: setting } = await db.query(
+                    `SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`
+                );
+                const autoReplyEnabled = setting.length === 0 || setting[0].value !== 'false';
+
+                if (!autoReplyEnabled) {
+                    console.log(`[Form] Auto-reply disabled via setting — skipped for customer #${customerId}`);
+                    await db.query('UPDATE customers SET wa_sent = FALSE WHERE id = $1', [customerId]).catch(() => {});
+                    return;
+                }
+
                 const waResult = await whatsappService.sendAutoReply({ nama_lengkap: finalName, whatsapp: cleanPhone });
                 const waSent = waResult && waResult.success;
                 await db.query('UPDATE customers SET wa_sent = $1, status = $2 WHERE id = $3',

@@ -910,25 +910,20 @@ exports.getDailySentCount = async (req, res) => {
 };
 
 /**
- * Start broadcast (DB-backed, Cloud API template)
+ * Start broadcast — plain-text via Baileys bridge
  * POST /api/admin/broadcast/start
- * Body: { template_name, template_language?, message?, source_filter?, merk_filter?, metode_filter? }
+ * Body: { message, source_filter?, merk_filter?, metode_filter? }
  *
- * Cloud API: broadcast HARUS pakai template (inisiasi percakapan)
- * Field 'message' tetap disimpan sebagai catatan/label di broadcast_jobs
+ * Backend worker (wa-worker.js) applies anti-ban: warm-up, random delay,
+ * break every 25-30 msgs, working-hours window, daily limit.
  */
 exports.startBroadcast = async (req, res) => {
     try {
-        const { message, template_name, template_language, source_filter, merk_filter, metode_filter } = req.body;
+        const { message, source_filter, merk_filter, metode_filter } = req.body;
 
-        // Cloud API memerlukan template untuk broadcast
-        const broadcastTemplate = template_name || whatsappService.templates.broadcast;
-
-        if (!broadcastTemplate) {
-            return res.status(400).json({ success: false, message: 'Template name wajib untuk broadcast Cloud API' });
+        if (!message || !String(message).trim()) {
+            return res.status(400).json({ success: false, message: 'Pesan wajib diisi' });
         }
-
-        const broadcastLabel = message || `[TEMPLATE] ${broadcastTemplate}`;
 
         // Check if there's already an active broadcast
         const { rows: active } = await db.query(
@@ -964,10 +959,10 @@ exports.startBroadcast = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Tidak ada customer opted-in untuk dibroadcast' });
         }
 
-        // Create broadcast job (simpan template info di message field)
+        // Create broadcast job (simpan plain text message)
         const { rows: [job] } = await db.query(
             `INSERT INTO broadcast_jobs (message, source_filter, status, total) VALUES ($1, $2, 'running', $3) RETURNING id`,
-            [JSON.stringify({ template_name: broadcastTemplate, template_language: template_language || 'id', label: broadcastLabel }), source_filter || null, customers.length]
+            [String(message).trim(), source_filter || null, customers.length]
         );
 
         // Insert all recipients
@@ -1292,48 +1287,70 @@ exports.getWABridgeStatus = async (req, res) => {
 };
 
 /**
- * Update auto-reply settings (disimpan di memory, reset saat restart)
- * POST /api/admin/wa/auto-reply
+ * Update form auto-reply template message (persisted to app_settings)
+ * POST /api/admin/wa/auto-reply  Body: { message: string }
  */
 exports.updateWAAutoReply = async (req, res) => {
-    // Auto-reply sekarang hanya untuk form submit, tidak untuk chat masuk
-    // Setting ini mengubah pesan auto-reply yang dikirim setelah form submit
-    res.json({ success: true, message: 'Auto-reply hanya aktif untuk form submission' });
+    try {
+        const { message } = req.body;
+        const result = await whatsappService.setAutoReplyMessage(message);
+        if (!result.success) return res.status(400).json(result);
+        res.json({ success: true, message: 'Template auto-reply tersimpan' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
 
 /**
- * Get auto-reply settings
+ * Get form auto-reply template message
  * GET /api/admin/wa/auto-reply
  */
 exports.getWAAutoReply = async (req, res) => {
-    res.json({ success: true, autoReply: true, message: 'Auto-reply aktif untuk form submission saja' });
+    try {
+        const { rows } = await db.query(
+            `SELECT value FROM app_settings WHERE key = 'form_autoreply_message' LIMIT 1`
+        );
+        const defaultMsg = 'Halo {nama}, terima kasih telah menghubungi Cahaya Phone Gorontalo! 🙏\n\nData Anda sudah kami terima. Tim kami akan segera menghubungi Anda untuk proses selanjutnya.';
+        res.json({
+            success: true,
+            autoReplyMessage: rows[0]?.value || defaultMsg,
+            autoReply: true
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
 
 /**
- * Disconnect WhatsApp (Fonnte: no-op, API selalu ready)
+ * Disconnect WhatsApp — logout bridge & wipe session (next scan = fresh QR)
  * POST /api/admin/wa/disconnect
  */
 exports.disconnectWA = async (req, res) => {
-    res.json({ success: true, message: 'Fonnte API tidak perlu disconnect — selalu tersedia selama API key valid' });
+    try {
+        await whatsappService.disconnectBridge();
+        res.json({ success: true, message: 'Bridge disconnected. Scan QR ulang untuk reconnect.' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
 
 /**
- * Restart WhatsApp (reload settings + restart worker)
+ * Restart bridge + reload settings + restart anti-ban worker
  * POST /api/admin/wa/restart
  */
 exports.restartWA = async (req, res) => {
     try {
         await whatsappService.loadSettings();
+        await whatsappService.restartBridge().catch(e => console.warn('[WA] Bridge restart:', e.message));
 
-        // Restart worker (recover stuck messages)
         const waWorker = require('../config/wa-worker');
         waWorker.stop();
         await waWorker.start();
 
         const status = await whatsappService.getStatus();
-        res.json({ success: true, message: 'WA Service reloaded + worker restarted', ...status });
+        res.json({ success: true, message: 'WA bridge restart + worker reload', ...status });
     } catch (err) {
-        res.json({ success: false, error: err.message });
+        res.status(500).json({ success: false, error: err.message });
     }
 };
 
@@ -1745,5 +1762,60 @@ exports.getAuditLog = async (req, res) => {
     } catch (error) {
         console.error('❌ Audit log error:', error);
         res.status(500).json({ success: false, message: 'Gagal mengambil audit log' });
+    }
+};
+
+// ============================================
+// APP SETTINGS: Global ON/OFF toggles
+// ============================================
+
+const AUTO_TOGGLE_KEYS = ['form_autoreply_enabled', 'birthday_auto_send'];
+
+/**
+ * Get semua toggle auto-send (form + birthday)
+ * GET /api/admin/settings/auto-toggles
+ */
+exports.getAutoToggles = async (req, res) => {
+    try {
+        const { rows } = await db.query(
+            `SELECT key, value FROM app_settings WHERE key = ANY($1)`,
+            [AUTO_TOGGLE_KEYS]
+        );
+        const map = {};
+        for (const r of rows) map[r.key] = r.value !== 'false';
+
+        res.json({
+            success: true,
+            data: {
+                form_autoreply_enabled: map.form_autoreply_enabled !== false,
+                birthday_auto_send: map.birthday_auto_send !== false
+            }
+        });
+    } catch (error) {
+        console.error('❌ getAutoToggles error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil pengaturan' });
+    }
+};
+
+/**
+ * Update toggle auto-send
+ * POST /api/admin/settings/auto-toggles
+ * Body: { key: 'form_autoreply_enabled' | 'birthday_auto_send', enabled: boolean }
+ */
+exports.setAutoToggle = async (req, res) => {
+    try {
+        const { key, enabled } = req.body;
+        if (!AUTO_TOGGLE_KEYS.includes(key)) {
+            return res.status(400).json({ success: false, message: 'Key tidak valid' });
+        }
+        await db.query(
+            `INSERT INTO app_settings (key, value) VALUES ($1, $2)
+             ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+            [key, String(!!enabled)]
+        );
+        res.json({ success: true, key, enabled: !!enabled });
+    } catch (error) {
+        console.error('❌ setAutoToggle error:', error);
+        res.status(500).json({ success: false, message: 'Gagal update pengaturan' });
     }
 };

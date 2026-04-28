@@ -1,548 +1,445 @@
 // ============================================
-// WA BRIDGE - WhatsApp Web.js Bridge Service
-// Deploy di Railway ($5/bulan)
+// CAHAYA PHONE WA BRIDGE v2 (Baileys)
+// Thin WhatsApp transport service.
+// - QR auth + auto-reconnect
+// - Send text messages (single, immediate)
+// - Check number registered
+// - Forward incoming messages to backend webhook
+//
+// Deployed to Railway. No Chromium needed.
+// Anti-ban orchestration (warm-up, delays, working hours) lives
+// in the BACKEND worker — this bridge just transports messages.
 // ============================================
 
 const express = require('express');
 const cors = require('cors');
-const { Client, LocalAuth } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
+const pino = require('pino');
+const { Boom } = require('@hapi/boom');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    Browsers,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore
+} = require('@whiskeysockets/baileys');
 
-const app = express();
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 // ============================================
-// CONFIGURATION
+// CONFIG
 // ============================================
 const PORT = process.env.PORT || 3001;
 const API_SECRET = process.env.WA_BRIDGE_SECRET || 'cahaya-phone-secret-key';
-const WEBHOOK_URL = process.env.WEBHOOK_URL || ''; // URL backend utama untuk forward pesan masuk
-const AUTO_REPLY_ENABLED = process.env.AUTO_REPLY_ENABLED !== 'false'; // default: true
+const WEBHOOK_URL = process.env.WEBHOOK_URL || ''; // backend webhook for incoming messages
+const SESSION_DIR = process.env.SESSION_DIR || './wa-session';
+const RECONNECT_MIN_DELAY = 5_000;
+const RECONNECT_MAX_DELAY = 60_000;
 
 // ============================================
 // STATE
 // ============================================
+let sock = null;
 let clientState = {
-    status: 'disconnected', // disconnected | qr_pending | authenticated | ready | error
-    qr: null,               // QR code data URL (base64 image)
-    qrRaw: null,            // QR code raw string
-    info: null,              // WhatsApp account info (phone, name)
+    status: 'disconnected', // disconnected | connecting | qr_pending | open | logged_out | error
+    qr: null,               // data URL
+    qrRaw: null,            // raw QR string
+    info: null,             // { phone, name, platform }
     lastError: null,
-    autoReply: AUTO_REPLY_ENABLED,
-    messagesSentToday: 0,
-    lastResetDate: new Date().toDateString()
+    connectedAt: null,
+    disconnectedAt: null
 };
-
-// Auto-reply message template
-let autoReplyMessage = process.env.AUTO_REPLY_MESSAGE ||
-    'Halo {nama}, terima kasih sudah menghubungi Cahaya Phone! Tim kami akan segera membantu Anda.';
-
-// ============================================
-// ANTI-BAN PROTECTION
-// ============================================
-
-// Tips anti-banned yang diimplementasi:
-// 1. Random delay antara pesan (5-15 detik untuk broadcast, 2-3 detik untuk single)
-// 2. Variasi pesan (prefix/suffix random)
-// 3. Limit pesan per hari (max 200 untuk akun baru, 500 untuk akun lama)
-// 4. Jangan kirim ke nomor yang tidak pernah chat
-// 5. Warm-up period: mulai dari sedikit, naikkan gradual
-// 6. Jangan kirim pesan identical ke banyak orang
-// 7. Gunakan akun WA yang sudah lama (>6 bulan)
-
-const ANTI_BAN = {
-    // Delay antara pesan (ms)
-    singleMessageDelay: { min: 500, max: 1500 },
-    broadcastDelay: { min: 8000, max: 15000 },
-
-    // Daily limit
-    dailyLimit: 200, // Mulai konservatif, naikkan pelan-pelan
-    warningAt: 100,
-
-    // Warm-up: hari pertama max 20, naik 20/hari
-    warmupDailyIncrease: 20,
-    warmupStartLimit: 20,
-
-    // Tracking
-    sentCount: 0,
-    lastResetDate: new Date().toDateString()
-};
-
-function resetDailyCounterIfNeeded() {
-    const today = new Date().toDateString();
-    if (ANTI_BAN.lastResetDate !== today) {
-        ANTI_BAN.sentCount = 0;
-        ANTI_BAN.lastResetDate = today;
-        clientState.messagesSentToday = 0;
-        clientState.lastResetDate = today;
-    }
-}
-
-function canSendMessage() {
-    resetDailyCounterIfNeeded();
-    return ANTI_BAN.sentCount < ANTI_BAN.dailyLimit;
-}
-
-function randomDelay(min, max) {
-    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-    return new Promise(resolve => setTimeout(resolve, delay));
-}
-
-// Queue untuk kirim pesan satu per satu (anti-spam)
-let messageQueue = [];
-let isProcessingQueue = false;
-
-async function processMessageQueue() {
-    if (isProcessingQueue) return;
-    isProcessingQueue = true;
-
-    while (messageQueue.length > 0) {
-        const task = messageQueue.shift();
-
-        if (!canSendMessage()) {
-            task.resolve({
-                success: false,
-                error: `Daily limit reached (${ANTI_BAN.dailyLimit} messages). Coba lagi besok.`
-            });
-            continue;
-        }
-
-        try {
-            // Random delay sebelum kirim (anti-ban)
-            const delayConfig = task.isBroadcast ? ANTI_BAN.broadcastDelay : ANTI_BAN.singleMessageDelay;
-            await randomDelay(delayConfig.min, delayConfig.max);
-
-            const chatId = task.phone.includes('@c.us') ? task.phone : `${task.phone}@c.us`;
-            await waClient.sendMessage(chatId, task.message);
-
-            ANTI_BAN.sentCount++;
-            clientState.messagesSentToday = ANTI_BAN.sentCount;
-
-            console.log(`[SENT] ${task.phone} (${ANTI_BAN.sentCount}/${ANTI_BAN.dailyLimit} today)`);
-            task.resolve({ success: true, phone: task.phone });
-        } catch (error) {
-            console.error(`[FAIL] ${task.phone}:`, error.message);
-            task.resolve({ success: false, phone: task.phone, error: error.message });
-        }
-    }
-
-    isProcessingQueue = false;
-}
-
-function queueMessage(phone, message, isBroadcast = false) {
-    return new Promise((resolve) => {
-        messageQueue.push({ phone, message, isBroadcast, resolve });
-        processMessageQueue();
-    });
-}
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let isShuttingDown = false;
 
 // ============================================
-// AUTH MIDDLEWARE
+// HTTP APP
 // ============================================
+const app = express();
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
+
 function authCheck(req, res, next) {
     const secret = req.headers['x-wa-secret'] || req.query.secret;
     if (secret !== API_SECRET) {
-        return res.status(401).json({ success: false, message: 'Invalid secret' });
+        return res.status(401).json({ success: false, error: 'Invalid secret' });
     }
     next();
 }
 
 // ============================================
-// WHATSAPP CLIENT
+// HELPERS
 // ============================================
-const puppeteerConfig = {
-    headless: true,
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--disable-gpu',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-site-isolation-trials'
-    ]
-};
-
-// Gunakan Chromium dari system jika ada (Docker/Railway)
-if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    puppeteerConfig.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+function toJid(phone) {
+    // phone should be Indonesian format '62xxx'
+    const clean = String(phone || '').replace(/\D/g, '');
+    if (!clean) return null;
+    return `${clean}@s.whatsapp.net`;
 }
 
-const waClient = new Client({
-    authStrategy: new LocalAuth({ dataPath: './wa-session' }),
-    webVersionCache: { type: 'none' },
-    puppeteer: puppeteerConfig
-});
+function isReady() {
+    return sock && clientState.status === 'open';
+}
 
-// QR Code event
-waClient.on('qr', async (qr) => {
-    console.log('[QR] New QR code generated');
-    clientState.status = 'qr_pending';
-    clientState.qrRaw = qr;
+async function forwardIncoming(payload) {
+    if (!WEBHOOK_URL) return;
     try {
-        clientState.qr = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+        const res = await fetch(WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-WA-Secret': API_SECRET },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            console.warn(`[WEBHOOK] Non-2xx response: ${res.status}`);
+        }
     } catch (err) {
-        console.error('[QR] Failed to generate QR image:', err);
+        console.warn('[WEBHOOK] Forward failed:', err.message);
     }
-});
+}
 
-// Authenticated event
-waClient.on('authenticated', () => {
-    console.log('[AUTH] WhatsApp authenticated');
-    clientState.status = 'authenticated';
-    clientState.qr = null;
-    clientState.qrRaw = null;
-});
+// ============================================
+// BAILEYS SOCKET LIFECYCLE
+// ============================================
+async function startSocket() {
+    if (isShuttingDown) return;
 
-// Ready event
-waClient.on('ready', async () => {
-    console.log('[READY] WhatsApp client is ready!');
-    clientState.status = 'ready';
-    clientState.qr = null;
-    clientState.qrRaw = null;
-    clientState.lastError = null;
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
 
     try {
-        const info = waClient.info;
-        clientState.info = {
-            phone: info.wid.user,
-            name: info.pushname,
-            platform: info.platform
-        };
-        console.log(`[INFO] Connected as: ${info.pushname} (${info.wid.user})`);
-    } catch (e) {
-        console.warn('[INFO] Could not get client info:', e.message);
-    }
-});
+        clientState.status = 'connecting';
+        clientState.lastError = null;
 
-// Disconnected event — auto-reconnect
-waClient.on('disconnected', async (reason) => {
-    console.log(`[DISCONNECT] WhatsApp disconnected: ${reason}`);
-    clientState.status = 'disconnected';
-    clientState.info = null;
-    clientState.lastError = `Disconnected: ${reason}`;
-    clientState.disconnectedAt = new Date().toISOString();
+        const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        console.log(`[BAILEYS] Using version ${version.join('.')} (latest: ${isLatest})`);
 
-    // Auto-reconnect after 10 seconds (if not manually triggered logout)
-    if (reason !== 'LOGOUT' && !isRestarting) {
-        console.log('[RECONNECT] Auto-reconnecting in 10 seconds...');
-        setTimeout(async () => {
-            if (clientState.status === 'disconnected' && !isRestarting) {
-                console.log('[RECONNECT] Attempting to reconnect...');
-                isRestarting = true;
+        sock = makeWASocket({
+            version,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, logger)
+            },
+            logger,
+            printQRInTerminal: false,
+            browser: Browsers.macOS('Safari'),
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            generateHighQualityLinkPreview: false,
+            // Don't cache message retries — keeps memory low
+            getMessage: async () => undefined
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                clientState.status = 'qr_pending';
+                clientState.qrRaw = qr;
                 try {
-                    await waClient.destroy().catch(() => {});
-                    await initializeWithRetry(3);
+                    clientState.qr = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+                    console.log('[QR] New QR code generated — scan via admin dashboard');
                 } catch (err) {
-                    console.error('[RECONNECT] Failed:', err.message);
-                    clientState.lastError = `Reconnect failed: ${err.message}`;
-                } finally {
-                    isRestarting = false;
+                    console.error('[QR] Failed to generate QR image:', err.message);
                 }
             }
-        }, 10000);
-    }
-});
 
-// Auth failure event
-waClient.on('auth_failure', (msg) => {
-    console.error('[AUTH FAIL]', msg);
-    clientState.status = 'error';
-    clientState.lastError = `Auth failed: ${msg}. Perlu scan QR ulang.`;
-});
+            if (connection === 'open') {
+                clientState.status = 'open';
+                clientState.qr = null;
+                clientState.qrRaw = null;
+                clientState.lastError = null;
+                clientState.connectedAt = new Date().toISOString();
+                reconnectAttempts = 0;
 
-// Incoming message handler
-waClient.on('message', async (msg) => {
-    // Abaikan pesan dari group, status, broadcast, atau pesan sendiri
-    if (msg.isGroupMsg || msg.from.endsWith('@g.us') || msg.isStatus || msg.fromMe || msg.from === 'status@broadcast') return;
-
-    const phone = msg.from.replace('@c.us', '');
-    const text = msg.body;
-    const contact = await msg.getContact();
-    const senderName = contact.pushname || contact.name || '';
-
-    console.log(`[MSG IN] ${senderName} (${phone}): ${text.substring(0, 50)}...`);
-
-    // Forward ke backend utama via webhook
-    if (WEBHOOK_URL) {
-        try {
-            await fetch(WEBHOOK_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-WA-Secret': API_SECRET
-                },
-                body: JSON.stringify({
-                    sender: phone,
-                    message: text,
-                    pushname: senderName,
-                    timestamp: msg.timestamp,
-                    source: 'wa-bridge'
-                })
-            });
-            console.log(`[WEBHOOK] Forwarded to ${WEBHOOK_URL}`);
-        } catch (err) {
-            console.error('[WEBHOOK] Forward failed:', err.message);
-        }
-    }
-
-    // Auto-reply untuk chat masuk DINONAKTIFKAN dari wa-bridge
-    // Auto-reply hanya dikirim saat customer submit form (via formController)
-    // Chat manual di WA → hanya auto-save kontak, reply biarkan dari fitur WA Business bawaan
-    console.log(`[AUTO-REPLY] Skipped - auto-reply only for form submissions`);
-});
-
-// Disconnected event
-waClient.on('disconnected', (reason) => {
-    console.log('[DISCONNECTED]', reason);
-    clientState.status = 'disconnected';
-    clientState.info = null;
-    clientState.qr = null;
-});
-
-// Auth failure
-waClient.on('auth_failure', (msg) => {
-    console.error('[AUTH_FAILURE]', msg);
-    clientState.status = 'error';
-    clientState.lastError = 'Authentication failed: ' + msg;
-});
-
-// Initialize client with retry
-async function initializeWithRetry(maxRetries = 3) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            console.log(`[INIT] Starting WhatsApp client (attempt ${attempt}/${maxRetries})...`);
-            await waClient.initialize();
-            console.log('[INIT] Client initialized successfully');
-            return;
-        } catch (err) {
-            console.error(`[INIT] Attempt ${attempt} failed:`, err.message);
-            clientState.lastError = err.message;
-
-            if (attempt < maxRetries) {
-                const waitSec = attempt * 5;
-                console.log(`[INIT] Retrying in ${waitSec} seconds...`);
-                await new Promise(r => setTimeout(r, waitSec * 1000));
-            } else {
-                console.error('[INIT] All attempts failed. Use /api/restart to try again.');
-                clientState.status = 'error';
+                try {
+                    const user = sock.user || {};
+                    const phoneId = (user.id || '').split(':')[0].split('@')[0];
+                    clientState.info = {
+                        phone: phoneId,
+                        name: user.name || user.notify || '',
+                        platform: 'baileys'
+                    };
+                    console.log(`[READY] Connected as ${clientState.info.name || '?'} (${clientState.info.phone})`);
+                } catch (e) {
+                    console.warn('[READY] Could not read user info:', e.message);
+                }
             }
-        }
+
+            if (connection === 'close') {
+                const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                const reason = DisconnectReason[statusCode] || 'unknown';
+                const errorMsg = lastDisconnect?.error?.message || String(lastDisconnect?.error || 'unknown');
+
+                console.log(`[CLOSE] Connection closed — code=${statusCode} reason=${reason} err="${errorMsg}"`);
+                clientState.info = null;
+                clientState.disconnectedAt = new Date().toISOString();
+
+                if (statusCode === DisconnectReason.loggedOut) {
+                    // Session invalidated — user logged out from phone. Must scan QR again.
+                    clientState.status = 'logged_out';
+                    clientState.lastError = 'Logged out. Scan QR code again to reconnect.';
+                    // Wipe session so next start yields fresh QR
+                    try {
+                        const fs = require('fs');
+                        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+                        fs.mkdirSync(SESSION_DIR, { recursive: true });
+                        console.log('[SESSION] Wiped — ready for re-scan');
+                    } catch (err) {
+                        console.warn('[SESSION] Wipe failed:', err.message);
+                    }
+                    scheduleReconnect(0); // immediate re-init to emit new QR
+                    return;
+                }
+
+                // Transient disconnect — reconnect with exponential backoff
+                clientState.status = 'disconnected';
+                clientState.lastError = `${reason}: ${errorMsg}`;
+                reconnectAttempts += 1;
+                scheduleReconnect();
+            }
+        });
+
+        // Incoming messages
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+
+            for (const msg of messages) {
+                try {
+                    // Skip own messages, status broadcasts, and protocol messages
+                    if (msg.key.fromMe) continue;
+                    if (msg.key.remoteJid === 'status@broadcast') continue;
+                    if (msg.key.remoteJid?.endsWith('@g.us')) continue; // skip group messages
+
+                    const text =
+                        msg.message?.conversation ||
+                        msg.message?.extendedTextMessage?.text ||
+                        msg.message?.imageMessage?.caption ||
+                        msg.message?.videoMessage?.caption ||
+                        '';
+
+                    if (!text) continue;
+
+                    const phone = (msg.key.remoteJid || '').replace('@s.whatsapp.net', '');
+                    const pushname = msg.pushName || '';
+                    const waMessageId = msg.key.id;
+                    const timestamp = Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
+
+                    console.log(`[MSG IN] ${pushname} (${phone}): ${text.substring(0, 60)}`);
+
+                    await forwardIncoming({
+                        sender: phone,
+                        message: text,
+                        pushname,
+                        timestamp,
+                        wa_message_id: waMessageId,
+                        source: 'wa-bridge'
+                    });
+                } catch (err) {
+                    console.error('[MSG IN] Processing error:', err.message);
+                }
+            }
+        });
+
+    } catch (err) {
+        clientState.status = 'error';
+        clientState.lastError = err.message;
+        console.error('[INIT] Failed to start socket:', err.message);
+        reconnectAttempts += 1;
+        scheduleReconnect();
     }
 }
 
-initializeWithRetry();
+function scheduleReconnect(overrideMs = null) {
+    if (isShuttingDown) return;
+    if (reconnectTimer) return;
+
+    let delay;
+    if (overrideMs !== null) {
+        delay = overrideMs;
+    } else {
+        // Exponential backoff with cap + jitter
+        const base = Math.min(RECONNECT_MIN_DELAY * Math.pow(2, reconnectAttempts - 1), RECONNECT_MAX_DELAY);
+        const jitter = Math.floor(Math.random() * 2000);
+        delay = base + jitter;
+    }
+
+    console.log(`[RECONNECT] Retrying in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})`);
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        startSocket().catch(err => {
+            console.error('[RECONNECT] startSocket threw:', err.message);
+            reconnectAttempts += 1;
+            scheduleReconnect();
+        });
+    }, delay);
+}
 
 // ============================================
 // API ROUTES
 // ============================================
 
-// Health check (public)
+// Public health check (no auth)
 app.get('/', (req, res) => {
     res.json({
-        service: 'Cahaya Phone WA Bridge',
+        service: 'Cahaya Phone WA Bridge v2 (Baileys)',
         status: clientState.status,
-        uptime: process.uptime()
+        uptime_seconds: Math.round(process.uptime())
     });
 });
 
-// Get QR code and connection status
+// Status + QR (requires auth)
 app.get('/api/status', authCheck, (req, res) => {
-    resetDailyCounterIfNeeded();
     res.json({
         success: true,
         status: clientState.status,
         qr: clientState.qr,
         info: clientState.info,
-        autoReply: clientState.autoReply,
-        messagesSentToday: clientState.messagesSentToday,
-        dailyLimit: ANTI_BAN.dailyLimit,
-        lastError: clientState.lastError
+        lastError: clientState.lastError,
+        connectedAt: clientState.connectedAt,
+        disconnectedAt: clientState.disconnectedAt
     });
 });
 
-// Send single message
+// Send single text message (immediate — backend orchestrator handles delay & anti-ban)
 app.post('/api/send', authCheck, async (req, res) => {
-    const { phone, message } = req.body;
+    const { phone, message, typing } = req.body;
 
     if (!phone || !message) {
         return res.status(400).json({ success: false, error: 'phone and message required' });
     }
-
-    if (clientState.status !== 'ready') {
-        return res.status(503).json({
-            success: false,
-            error: 'WhatsApp not connected. Status: ' + clientState.status
-        });
+    if (!isReady()) {
+        return res.status(503).json({ success: false, error: `WhatsApp not connected (status: ${clientState.status})` });
     }
 
-    const result = await queueMessage(phone, message, false);
-    res.json(result);
+    const jid = toJid(phone);
+    if (!jid) return res.status(400).json({ success: false, error: 'Invalid phone number' });
+
+    try {
+        // Optional: typing indicator for humanlike behavior. Backend controls whether to enable.
+        if (typing) {
+            try {
+                await sock.presenceSubscribe(jid);
+                await sock.sendPresenceUpdate('composing', jid);
+                // Typing duration: 1.5-3.5 seconds (matches realistic human typing)
+                await new Promise(r => setTimeout(r, 1500 + Math.random() * 2000));
+                await sock.sendPresenceUpdate('paused', jid);
+            } catch (e) {
+                // non-fatal
+            }
+        }
+
+        const result = await sock.sendMessage(jid, { text: message });
+        const waMessageId = result?.key?.id || null;
+
+        console.log(`[SENT] ${phone} (wa_id: ${waMessageId})`);
+        return res.json({ success: true, phone, wa_message_id: waMessageId });
+    } catch (err) {
+        console.error(`[SEND FAIL] ${phone}:`, err.message);
+        return res.status(500).json({ success: false, phone, error: err.message });
+    }
 });
 
-// Send broadcast message (single recipient, called per-recipient by main backend)
-app.post('/api/send-broadcast', authCheck, async (req, res) => {
-    const { phone, message } = req.body;
+// Check if number is registered on WhatsApp
+app.post('/api/check-number', authCheck, async (req, res) => {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: 'phone required' });
+    if (!isReady()) return res.status(503).json({ success: false, error: `Not connected (status: ${clientState.status})` });
 
-    if (!phone || !message) {
-        return res.status(400).json({ success: false, error: 'phone and message required' });
+    try {
+        const clean = String(phone).replace(/\D/g, '');
+        const [result] = await sock.onWhatsApp(clean);
+        if (result && result.exists) {
+            return res.json({ success: true, registered: true, jid: result.jid });
+        }
+        return res.json({ success: true, registered: false });
+    } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
     }
-
-    if (clientState.status !== 'ready') {
-        return res.status(503).json({
-            success: false,
-            error: 'WhatsApp not connected. Status: ' + clientState.status
-        });
-    }
-
-    const result = await queueMessage(phone, message, true); // longer delay for broadcast
-    res.json(result);
 });
 
-// Toggle auto-reply
-app.post('/api/auto-reply', authCheck, (req, res) => {
-    const { enabled, message } = req.body;
-    if (typeof enabled === 'boolean') {
-        clientState.autoReply = enabled;
-    }
-    if (message && typeof message === 'string') {
-        autoReplyMessage = message;
-    }
-    res.json({
-        success: true,
-        autoReply: clientState.autoReply,
-        autoReplyMessage: autoReplyMessage
-    });
-});
-
-// Get auto-reply settings
-app.get('/api/auto-reply', authCheck, (req, res) => {
-    res.json({
-        success: true,
-        autoReply: clientState.autoReply,
-        autoReplyMessage: autoReplyMessage
-    });
-});
-
-// Update daily limit
-app.post('/api/settings', authCheck, (req, res) => {
-    const { dailyLimit } = req.body;
-    if (dailyLimit && Number.isInteger(dailyLimit) && dailyLimit > 0) {
-        ANTI_BAN.dailyLimit = dailyLimit;
-    }
-    res.json({
-        success: true,
-        dailyLimit: ANTI_BAN.dailyLimit,
-        sentToday: ANTI_BAN.sentCount
-    });
-});
-
-// Disconnect WhatsApp
+// Force logout + wipe session (requires fresh QR scan)
 app.post('/api/disconnect', authCheck, async (req, res) => {
     try {
-        await waClient.logout();
-        clientState.status = 'disconnected';
-        clientState.info = null;
-        clientState.qr = null;
-        res.json({ success: true, message: 'WhatsApp disconnected' });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// Restart client (re-generate QR)
-let isRestarting = false;
-app.post('/api/restart', authCheck, async (req, res) => {
-    if (isRestarting) {
-        return res.json({ success: true, message: 'Already restarting. Check /api/status for QR.' });
-    }
-    isRestarting = true;
-
-    try {
-        clientState.status = 'disconnected';
-        clientState.qr = null;
-        clientState.info = null;
-
-        await waClient.destroy().catch(() => {});
-        console.log('[RESTART] Reinitializing client...');
-
-        // Respond immediately, init in background
-        res.json({ success: true, message: 'WhatsApp client restarting. Check /api/status for QR.' });
-
-        await initializeWithRetry(3);
-        isRestarting = false;
-    } catch (err) {
-        clientState.status = 'error';
-        clientState.lastError = err.message;
-        isRestarting = false;
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// Get daily stats
-app.get('/api/stats', authCheck, (req, res) => {
-    resetDailyCounterIfNeeded();
-    res.json({
-        success: true,
-        sentToday: ANTI_BAN.sentCount,
-        dailyLimit: ANTI_BAN.dailyLimit,
-        remaining: ANTI_BAN.dailyLimit - ANTI_BAN.sentCount,
-        queueLength: messageQueue.length
-    });
-});
-
-// ============================================
-// MEMORY LEAK PROTECTION
-// Auto-restart Chromium setiap 6 jam untuk cegah memory leak
-// ============================================
-const RESTART_INTERVAL = 6 * 60 * 60 * 1000; // 6 jam
-
-setInterval(async () => {
-    const memUsage = process.memoryUsage();
-    const ramMB = Math.round(memUsage.rss / 1024 / 1024);
-    console.log(`[MEMORY] RAM usage: ${ramMB} MB`);
-
-    // Force restart jika RAM > 400MB atau setiap 6 jam
-    if (ramMB > 400 || true) {
-        console.log('[MEMORY] Scheduled restart to prevent memory leak...');
-        try {
-            if (clientState.status === 'ready') {
-                await waClient.destroy().catch(() => {});
-                console.log('[MEMORY] Client destroyed, reinitializing...');
-                await waClient.initialize();
-                console.log('[MEMORY] Client reinitialized successfully');
-            }
-        } catch (err) {
-            console.error('[MEMORY] Restart failed:', err.message);
+        if (sock) {
+            try { await sock.logout(); } catch (_) { /* ignore */ }
+            try { sock.end(new Error('manual disconnect')); } catch (_) { /* ignore */ }
+            sock = null;
         }
-    }
-}, RESTART_INTERVAL);
+        const fs = require('fs');
+        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+        fs.mkdirSync(SESSION_DIR, { recursive: true });
+        clientState.status = 'logged_out';
+        clientState.info = null;
+        clientState.qr = null;
 
-// Monitor RAM setiap 5 menit (log saja)
-setInterval(() => {
-    const ramMB = Math.round(process.memoryUsage().rss / 1024 / 1024);
-    console.log(`[MONITOR] RAM: ${ramMB} MB | Messages today: ${ANTI_BAN.sentCount}/${ANTI_BAN.dailyLimit} | Queue: ${messageQueue.length}`);
-}, 5 * 60 * 1000);
+        res.json({ success: true, message: 'Disconnected & session wiped. Restart to get new QR.' });
+
+        // Auto-start for new QR after short delay
+        setTimeout(() => startSocket().catch(() => {}), 1500);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Restart socket (soft) — useful to re-establish connection
+app.post('/api/restart', authCheck, async (req, res) => {
+    try {
+        res.json({ success: true, message: 'Restarting socket...' });
+
+        if (sock) {
+            try { sock.end(new Error('manual restart')); } catch (_) { /* ignore */ }
+            sock = null;
+        }
+        reconnectAttempts = 0;
+        setTimeout(() => startSocket().catch(err => console.error('[RESTART] Failed:', err.message)), 500);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // ============================================
-// START SERVER
+// STARTUP
 // ============================================
 app.listen(PORT, () => {
     console.log(`
 ========================================
-  Cahaya Phone WA Bridge
-  Running on port ${PORT}
-
-  Anti-Banned:
-  - Delay 8-15 detik antar broadcast
-  - Max ${ANTI_BAN.dailyLimit} pesan/hari
-  - Variasi pesan otomatis dari backend
-
-  Memory Protection:
-  - Auto-restart Chromium tiap 6 jam
-  - RAM monitor tiap 5 menit
+  Cahaya Phone WA Bridge v2 (Baileys)
+  Port: ${PORT}
+  Webhook: ${WEBHOOK_URL || '(not configured)'}
+  Session: ${SESSION_DIR}
 ========================================
     `);
+    startSocket().catch(err => {
+        console.error('[STARTUP] Initial start failed:', err.message);
+        reconnectAttempts = 1;
+        scheduleReconnect();
+    });
+});
+
+// Graceful shutdown
+async function shutdown(signal) {
+    console.log(`[SHUTDOWN] Received ${signal} — closing...`);
+    isShuttingDown = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (sock) {
+        try { sock.end(new Error('shutdown')); } catch (_) { /* ignore */ }
+    }
+    setTimeout(() => process.exit(0), 1500);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Prevent silent crashes
+process.on('uncaughtException', (err) => {
+    console.error('[CRASH PREVENTED] Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[CRASH PREVENTED] Unhandled Rejection:', reason);
 });

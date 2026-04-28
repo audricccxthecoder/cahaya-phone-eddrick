@@ -50,13 +50,9 @@ const forgotLimiter = rateLimit({
 // Customer form submission (rate limited)
 router.post('/form-submit', formLimiter, formController.submitForm);
 
-// WhatsApp webhook (legacy — Fonnte/Wablas format)
+// WhatsApp webhook — incoming messages from wa-bridge (Baileys)
 router.post('/webhook/whatsapp', webhookController.handleWhatsAppWebhook);
 router.get('/webhook/test', webhookController.testWebhook);
-
-// WhatsApp Cloud API webhook (Meta official)
-router.get('/webhook/cloud', webhookController.verifyCloudWebhook);
-router.post('/webhook/cloud', webhookController.handleCloudWebhook);
 
 // Quick-sync contacts (protected by secret key in Authorization header)
 router.get('/sync/contacts', adminController.quickSyncVCF);
@@ -144,5 +140,9 @@ router.post('/admin/cleanup/delete', authMiddleware, auditLog('cleanup_delete'),
 
 // Audit trail
 router.get('/admin/audit-log', authMiddleware, adminController.getAuditLog);
+
+// App settings — global auto toggles
+router.get('/admin/settings/auto-toggles', authMiddleware, adminController.getAutoToggles);
+router.post('/admin/settings/auto-toggles', authMiddleware, auditLog('update_auto_toggle'), adminController.setAutoToggle);
 
 module.exports = router;

@@ -677,10 +677,40 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // DASHBOARD
     // ============================================
 
+    // Load global auto-send toggles (form auto-reply + birthday auto-send)
+    async function loadAutoToggles() {
+        try {
+            const result = await apiCall('/admin/settings/auto-toggles');
+            if (result && result.success) {
+                const formEl = document.getElementById('formAutoReplyToggle');
+                const bdEl = document.getElementById('birthdayAutoSendGlobal');
+                if (formEl) formEl.checked = result.data.form_autoreply_enabled !== false;
+                if (bdEl) bdEl.checked = result.data.birthday_auto_send !== false;
+            }
+        } catch (e) {
+            console.warn('loadAutoToggles failed:', e.message);
+        }
+    }
+
+    window.saveAutoToggle = async function(key, enabled) {
+        const result = await apiCall('/admin/settings/auto-toggles', {
+            method: 'POST',
+            body: JSON.stringify({ key, enabled })
+        });
+        if (!result || !result.success) {
+            alert('Gagal menyimpan pengaturan. Coba lagi.');
+            // Revert the UI
+            loadAutoToggles();
+        }
+    };
+
     async function loadDashboard() {
         try {
             console.log('📊 Loading dashboard stats...');
-            
+
+            // Load global toggles (non-blocking)
+            loadAutoToggles();
+
             // Load statistics
             const stats = await apiCall('/admin/stats');
             
@@ -1705,7 +1735,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         const limitEl = document.getElementById('waDailyLimit');
         if (limitEl && dailyLimit) limitEl.value = dailyLimit;
 
-        if (status === 'ready' && info) {
+        if ((status === 'ready' || status === 'connected' || status === 'open') && info) {
             // Connected
             container.innerHTML = `
                 <div style="text-align:center;padding:20px;">
@@ -1767,46 +1797,24 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     window.loadWAAutoReply = async function() {
         const res = await apiCall('/admin/wa/auto-reply');
         if (res && res.success) {
-            const toggle = document.getElementById('waAutoReplyToggle');
-            const slider = document.getElementById('waAutoReplySlider');
-            const statusEl = document.getElementById('waAutoReplyStatus');
             const msgEl = document.getElementById('waAutoReplyMessage');
-
-            toggle.checked = res.autoReply;
-            slider.style.background = res.autoReply ? '#25D366' : '#ccc';
-            statusEl.textContent = res.autoReply ? 'Aktif' : 'Nonaktif';
-            statusEl.style.color = res.autoReply ? '#25D366' : '#8C8078';
-            if (res.autoReplyMessage) msgEl.value = res.autoReplyMessage;
+            if (msgEl && res.autoReplyMessage) msgEl.value = res.autoReplyMessage;
         }
     };
 
-    window.toggleWAAutoReply = async function() {
-        const toggle = document.getElementById('waAutoReplyToggle');
-        const slider = document.getElementById('waAutoReplySlider');
-        const statusEl = document.getElementById('waAutoReplyStatus');
-
-        const enabled = toggle.checked;
-        slider.style.background = enabled ? '#25D366' : '#ccc';
-        statusEl.textContent = enabled ? 'Aktif' : 'Nonaktif';
-        statusEl.style.color = enabled ? '#25D366' : '#8C8078';
-
-        await apiCall('/admin/wa/auto-reply', {
-            method: 'POST',
-            body: JSON.stringify({ enabled })
-        });
-    };
+    // Kept for compatibility with the toggle in dashboard card (now handled by saveAutoToggle)
+    window.toggleWAAutoReply = async function() {};
 
     window.saveWAAutoReply = async function() {
         const message = document.getElementById('waAutoReplyMessage').value.trim();
-        const enabled = document.getElementById('waAutoReplyToggle').checked;
         if (!message) { alert('Pesan auto-reply tidak boleh kosong!'); return; }
 
         const res = await apiCall('/admin/wa/auto-reply', {
             method: 'POST',
-            body: JSON.stringify({ enabled, message })
+            body: JSON.stringify({ message })
         });
         if (res && res.success) {
-            alert('Auto-reply berhasil disimpan!');
+            alert('Template auto-reply berhasil disimpan!');
         } else {
             alert('Gagal menyimpan: ' + (res?.error || 'Unknown error'));
         }
@@ -1965,7 +1973,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 <div style="background:#eee;border-radius:4px;height:8px;">
                     <div style="background:#27ae60;width:${progressPct}%;height:8px;border-radius:4px;transition:width 0.3s;"></div>
                 </div>
-                <small class="muted">${progressPct}% selesai — delay 3-8 detik antar pesan (anti-spam)</small>
+                <small class="muted">${progressPct}% selesai — delay 2-4 menit antar pesan, break 15-30 menit tiap 25-30 pesan, hanya kirim 07-21 WITA</small>
             </div>
             <div style="max-height:200px;overflow-y:auto;border:1px solid #eee;padding:8px;border-radius:4px;">
                 ${logHtml || '<span class="muted">Log kosong</span>'}
