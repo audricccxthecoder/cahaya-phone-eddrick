@@ -15,6 +15,11 @@ process.on('unhandledRejection', (reason) => {
 
 const app = express();
 
+// Trust the first proxy hop (Railway / Vercel / similar PaaS).
+// Required so express-rate-limit reads client IP from X-Forwarded-For
+// instead of the proxy's IP, and to silence ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set('trust proxy', 1);
+
 // ============================================
 // MIDDLEWARE
 // ============================================
