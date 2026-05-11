@@ -8,6 +8,22 @@ const whatsappService = require('../config/whatsapp');
 
 const DEFAULT_MESSAGE = `Halo Kak {nama}! 🎂🎉\n\nSelamat Ulang Tahun dari kami *CAHAYA PHONE* Gorontalo!\n\nSemoga panjang umur, sehat selalu, dan diberkahi rezeki yang melimpah. Terima kasih sudah menjadi pelanggan setia kami.\n\nSalam hangat,\nCahaya Phone 🙏`;
 
+// Calculate age in years from tanggal_lahir.
+// Birthday cron only fires on the actual birthday so this is just (currentYear - birthYear),
+// but we still adjust for month/day in case the function is called off-day (manual trigger).
+function calculateAge(birthDate) {
+    if (!birthDate) return null;
+    const today = new Date();
+    const birth = new Date(birthDate);
+    if (isNaN(birth.getTime())) return null;
+    let age = today.getFullYear() - birth.getFullYear();
+    const monthDiff = today.getMonth() - birth.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+        age--;
+    }
+    return age >= 0 ? age : null;
+}
+
 /**
  * Get customers yang ulang tahun hari ini
  */
@@ -199,8 +215,10 @@ async function sendBirthdayMessage(customerId) {
         );
         let message = msgResult.rows.length > 0 ? msgResult.rows[0].value : DEFAULT_MESSAGE;
 
-        // Replace placeholder
+        // Replace placeholders: {nama} = customer name, {umur} = age in years
         message = message.replace(/\{nama\}/g, customer.nama_lengkap);
+        const umur = calculateAge(customer.tanggal_lahir);
+        message = message.replace(/\{umur\}/g, umur !== null ? String(umur) : '');
 
         // Cek dulu apakah nomor terdaftar di WhatsApp
         const numberCheck = await whatsappService.isNumberRegistered(customer.whatsapp);
