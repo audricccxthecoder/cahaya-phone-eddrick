@@ -1226,12 +1226,18 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         // Purchase history section — always show if there are purchases
         let purchaseHtml = '';
         if (purchaseCount > 0) {
-            const purchaseSummary = purchases.map((p, i) => `
+            const totalUnit = purchases.reduce((sum, p) => sum + (Number(p.qty) || 1), 0);
+            const totalOmzet = purchases.reduce((sum, p) => sum + ((Number(p.harga) || 0) * (Number(p.qty) || 1)), 0);
+            const purchaseSummary = purchases.map((p, i) => {
+                const q = Number(p.qty) || 1;
+                const item = (p.merk_unit || '-') + (p.tipe_unit ? ' ' + p.tipe_unit : '');
+                return `
                 <div style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid #EDE8E3;font-size:13px;">
                     <div style="color:#5C534B;">${formatTanggal(p.created_at)}</div>
-                    <div style="font-weight:600;color:#1A1412;">${(p.merk_unit || '-') + (p.tipe_unit ? ' ' + p.tipe_unit : '')}</div>
+                    <div style="font-weight:600;color:#1A1412;">${item}${q > 1 ? ` <span style="background:#B91C1C;color:#fff;padding:1px 6px;border-radius:6px;font-size:11px;margin-left:4px;">${q} unit</span>` : ''}</div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
             purchaseHtml = `
                 <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
@@ -1240,7 +1246,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                         <span style="background:#B91C1C;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;">${purchaseCount}x transaksi</span>
                     </div>
                     <div style="margin-bottom:16px;padding:14px 16px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;">
-                        <div style="font-size:13px;font-weight:600;color:#92400E;margin-bottom:8px;">Ringkasan Pembelian:</div>
+                        <div style="font-size:13px;font-weight:600;color:#92400E;margin-bottom:8px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                            <span>Ringkasan Pembelian (${totalUnit} unit total):</span>
+                            <span>Total: ${formatRpDetail(totalOmzet)}</span>
+                        </div>
                         ${purchaseSummary}
                     </div>
                     <div style="overflow-x:auto;border:1px solid #EDE8E3;border-radius:8px;">
@@ -1249,19 +1258,27 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                 <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Tanggal</th>
                                 <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Merk HP</th>
                                 <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Tipe HP</th>
-                                <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Harga</th>
+                                <th style="text-align:center;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Qty</th>
+                                <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Harga Satuan</th>
+                                <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Subtotal</th>
                                 <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Sales</th>
                             </tr></thead>
                             <tbody>
-                                ${purchases.map((p, i) => `
+                                ${purchases.map((p, i) => {
+                                    const q = Number(p.qty) || 1;
+                                    const h = Number(p.harga) || 0;
+                                    return `
                                     <tr style="background:${i % 2 === 0 ? '#fff' : '#FAFAF8'};">
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;">${formatTanggal(p.created_at)}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:600;color:#B91C1C;">${p.merk_unit || '-'}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${p.tipe_unit || '-'}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${p.harga ? formatRpDetail(p.harga) : '-'}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;font-weight:600;">${q}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${h ? formatRpDetail(h) : '-'}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:600;color:#B91C1C;">${h ? formatRpDetail(h * q) : '-'}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${p.nama_sales || '-'}</td>
                                     </tr>
-                                `).join('')}
+                                `;
+                                }).join('')}
                             </tbody>
                         </table>
                     </div>
