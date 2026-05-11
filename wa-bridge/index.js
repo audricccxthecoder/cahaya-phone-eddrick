@@ -11,6 +11,8 @@
 // in the BACKEND worker — this bridge just transports messages.
 // ============================================
 
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
@@ -226,12 +228,27 @@ async function startSocket() {
 
                     if (!text) continue;
 
-                    const phone = (msg.key.remoteJid || '').replace('@s.whatsapp.net', '');
+                    // Resolve sender JID — handle WA's new LID format.
+                    // When sender isn't in our phonebook, remoteJid is `xxx@lid` (LID, not phone).
+                    // Real phone lives in key.senderPn (sender phone number) on Baileys 6.7+.
+                    const remoteJid = msg.key.remoteJid || '';
                     const pushname = msg.pushName || '';
+                    let phoneJid;
+                    if (remoteJid.endsWith('@lid')) {
+                        const realPhone = msg.key.senderPn || msg.key.remoteJidAlt;
+                        if (!realPhone) {
+                            console.log(`[MSG IN] LID-only sender ${pushname} (${remoteJid}) — no real phone available, skipped`);
+                            continue;
+                        }
+                        phoneJid = realPhone;
+                    } else {
+                        phoneJid = remoteJid;
+                    }
+                    const phone = phoneJid.replace('@s.whatsapp.net', '').replace('@lid', '').split(':')[0];
                     const waMessageId = msg.key.id;
                     const timestamp = Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000);
 
-                    console.log(`[MSG IN] ${pushname} (${phone}): ${text.substring(0, 60)}`);
+                    console.log(`[MSG IN] ${pushname} (${phone}${remoteJid.endsWith('@lid') ? ' via LID' : ''}): ${text.substring(0, 60)}`);
 
                     await forwardIncoming({
                         sender: phone,

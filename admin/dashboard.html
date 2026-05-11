@@ -482,38 +482,6 @@
                 </div>
             </div>
 
-            <!-- Anti-Ban Settings -->
-            <div class="card" style="margin-bottom:16px;">
-                <div class="card-header"><h3>Anti-Ban Settings</h3></div>
-                <div class="card-body">
-                    <div style="background:rgba(185,28,28,0.04);border:1px solid rgba(185,28,28,0.12);padding:16px;border-radius:10px;margin-bottom:16px;">
-                        <h4 style="margin:0 0 8px 0;font-size:14px;color:#B91C1C;">Strategi Anti-Ban Aktif (target 90-95% aman):</h4>
-                        <ul style="margin:0;padding-left:20px;font-size:13px;color:#5C534B;line-height:1.8;">
-                            <li>Pakai nomor WA Business yang sudah >6 bulan</li>
-                            <li>Warm-up: 20 pesan pertama/hari pakai delay 90-180 detik</li>
-                            <li>Setelah warm-up: delay 120-240 detik (2-4 menit) antar pesan</li>
-                            <li>Break otomatis 15-30 menit tiap 25-30 pesan terkirim</li>
-                            <li>Kirim hanya jam 07:00-21:00 WITA (menghindari jam tidur)</li>
-                            <li>Typing indicator sebelum kirim (meniru manusia)</li>
-                            <li>Variasi pesan otomatis: salam awal, emoji, zero-width spaces</li>
-                            <li>Limit harian max pesan (default 200) — tidak bisa dilampaui</li>
-                            <li>Hanya kirim ke customer yang opted-in (tidak opt-out STOP)</li>
-                        </ul>
-                    </div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-                        <div class="form-group">
-                            <label>Limit Pesan Per Hari</label>
-                            <input type="number" id="waDailyLimit" value="200" min="10" max="1000" style="width:100%;padding:10px 14px;border:1px solid #EDE8E3;border-radius:8px;font-size:14px;background:#F5F3F0;">
-                        </div>
-                        <div class="form-group">
-                            <label>Terkirim Hari Ini</label>
-                            <div id="waSentToday" style="padding:10px 14px;border:1px solid #EDE8E3;border-radius:8px;font-size:14px;background:#F5F3F0;color:#B91C1C;font-weight:600;">-</div>
-                        </div>
-                    </div>
-                    <button class="btn-primary" style="width:auto;" onclick="saveWASettings()">Simpan Settings</button>
-                </div>
-            </div>
-
             <!-- Failed Messages - Retry -->
             <div class="card" style="margin-bottom:16px;">
                 <div class="card-header">

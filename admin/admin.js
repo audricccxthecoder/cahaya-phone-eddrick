@@ -793,7 +793,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             if (customers && customers.success) {
                 const today = toWITADate(new Date());
-                dashTodayCustomers = customers.data.filter(c => c.created_at && toWITADate(c.created_at) === today);
+                dashTodayCustomers = customers.data.filter(c => {
+                    const refDate = c.last_purchase_at || c.created_at;
+                    return refDate && toWITADate(refDate) === today;
+                });
                 console.log(`✅ Loaded ${dashTodayCustomers.length} customers today`);
                 displayRecentCustomers();
             } else {
@@ -1001,7 +1004,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             </tr></thead><tbody>`;
 
         pageData.forEach((customer, index) => {
-            const date = formatTanggal(customer.created_at);
+            const date = formatTanggal(customer.last_purchase_at || customer.created_at);
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
@@ -1108,11 +1111,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 return m.includes(target) || t.includes(target);
             });
         }
-        if (dateFrom) filtered = filtered.filter(c => new Date(c.created_at) >= new Date(dateFrom));
+        const refDate = c => c.last_purchase_at || c.created_at;
+        if (dateFrom) filtered = filtered.filter(c => new Date(refDate(c)) >= new Date(dateFrom));
         if (dateTo) {
             const to = new Date(dateTo);
             to.setDate(to.getDate() + 1);
-            filtered = filtered.filter(c => new Date(c.created_at) < to);
+            filtered = filtered.filter(c => new Date(refDate(c)) < to);
         }
 
         // Sorting — harga takes precedence if set, else waktu
@@ -1121,9 +1125,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         } else if (sortHarga === 'expensive') {
             filtered.sort((a, b) => (Number(b.harga) || 0) - (Number(a.harga) || 0));
         } else if (sortWaktu === 'newest') {
-            filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            filtered.sort((a, b) => new Date(refDate(b)) - new Date(refDate(a)));
         } else if (sortWaktu === 'oldest') {
-            filtered.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            filtered.sort((a, b) => new Date(refDate(a)) - new Date(refDate(b)));
         }
 
         currentPage = 1;
@@ -1558,7 +1562,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 apiCall('/admin/wa/failed')
             ]);
 
-            const isConnected = waRes && waRes.success && waRes.status === 'ready';
+            const isConnected = waRes && waRes.success && ['ready', 'connected', 'open'].includes(waRes.status);
             const failedCount = (failedRes && failedRes.success) ? failedRes.count : 0;
 
             const titleEl = banner.querySelector('strong');
