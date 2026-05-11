@@ -697,23 +697,26 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // API CALLS
     // ============================================
 
-    async function apiCall(endpoint, options = {}) {
+    // Auto-retry transient failures (backend restart, transient 5xx, network blip).
+    // Retries with exponential backoff + jitter; 401 / 4xx still fail-fast because
+    // those mean the request itself is wrong, not the network.
+    async function apiCall(endpoint, options = {}, _attempt = 0) {
+        const MAX_RETRIES = 3;
+        const method = (options.method || 'GET').toUpperCase();
+        const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers
+        };
+        if (isWrite) {
+            headers['X-CSRF-Token'] = getCsrfToken();
+        }
+
         try {
-            const method = (options.method || 'GET').toUpperCase();
-            const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
-
-            const headers = {
-                'Content-Type': 'application/json',
-                ...options.headers
-            };
-            // Send CSRF token on writes (double-submit cookie pattern).
-            if (isWrite) {
-                headers['X-CSRF-Token'] = getCsrfToken();
-            }
-
             const response = await fetch(`${API_URL}${endpoint}`, {
                 ...options,
-                credentials: 'include',     // send httpOnly auth_token + csrf_token cookies
+                credentials: 'include',
                 headers
             });
 
@@ -722,9 +725,27 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 return null;
             }
 
+            // Transient server errors → backoff + retry. 500 also retried once because
+            // Railway sometimes returns 500 during deploy switchover.
+            const retryableStatus = [500, 502, 503, 504];
+            if (retryableStatus.includes(response.status) && _attempt < MAX_RETRIES) {
+                const backoff = 400 * Math.pow(2, _attempt) + Math.random() * 300;
+                console.warn(`[apiCall] ${response.status} on ${endpoint}, retry ${_attempt + 1}/${MAX_RETRIES} in ${Math.round(backoff)}ms`);
+                await new Promise(r => setTimeout(r, backoff));
+                return apiCall(endpoint, options, _attempt + 1);
+            }
+
             return await response.json();
         } catch (error) {
-            console.error('API error:', error);
+            // Network error (fetch threw — DNS, connection refused, etc). Backend
+            // probably restarting; back off and try again.
+            if (_attempt < MAX_RETRIES) {
+                const backoff = 400 * Math.pow(2, _attempt) + Math.random() * 300;
+                console.warn(`[apiCall] Network error on ${endpoint}, retry ${_attempt + 1}/${MAX_RETRIES} in ${Math.round(backoff)}ms`);
+                await new Promise(r => setTimeout(r, backoff));
+                return apiCall(endpoint, options, _attempt + 1);
+            }
+            console.error('API error after retries:', error);
             return null;
         }
     }
