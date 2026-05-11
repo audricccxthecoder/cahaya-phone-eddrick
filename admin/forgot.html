@@ -34,33 +34,68 @@
 
   <script src="/config.js"></script>
   <script>
-    const API_URL = API_BASE_URL + '/api';
-    document.getElementById('forgotForm').addEventListener('submit', async (e) => {
+    console.log('[forgot] script loaded');
+
+    // Safety: API_BASE_URL may be undefined if /config.js failed to load.
+    // Fall back to same-origin so the form still posts to /api/admin/forgot.
+    const API_URL = (typeof API_BASE_URL === 'string' ? API_BASE_URL : '') + '/api';
+    console.log('[forgot] API_URL =', API_URL);
+
+    const form = document.getElementById('forgotForm');
+    const btn = form ? form.querySelector('button[type="submit"]') : null;
+    if (!form) {
+      console.error('[forgot] #forgotForm not found in DOM!');
+    }
+
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      console.log('[forgot] submit fired');
       const alertEl = document.getElementById('forgotAlert');
       alertEl.className = 'alert';
       const v = document.getElementById('usernameOrEmail').value.trim();
-      if (!v) return;
-      const res = await fetch(`${API_URL}/admin/forgot`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ usernameOrEmail: v }) });
-      const data = await res.json();
-      if (data.success) {
-        alertEl.textContent = data.message || 'Jika akun ditemukan, link reset dikirim ke email.';
-        alertEl.classList.add('success','show');
-        // Dev-only: token returned inline if mail isn't configured
-        if (data._devToken) {
-          const pre = document.createElement('pre');
-          pre.style.marginTop = '10px';
-          pre.style.fontSize = '11px';
-          pre.style.background = '#FEF3C7';
-          pre.style.border = '1px solid #FDE68A';
-          pre.style.padding = '8px';
-          pre.style.borderRadius = '6px';
-          pre.textContent = '[DEV] ' + (data._devNote || '') + '\nReset link: /admin/reset.html?token=' + data._devToken;
-          alertEl.appendChild(pre);
+      if (!v) {
+        console.warn('[forgot] empty input');
+        return;
+      }
+
+      if (btn) { btn.disabled = true; btn.textContent = 'Mengirim...'; }
+
+      try {
+        const res = await fetch(`${API_URL}/admin/forgot`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ usernameOrEmail: v })
+        });
+        console.log('[forgot] response status:', res.status);
+        const data = await res.json();
+        console.log('[forgot] response data:', data);
+
+        if (data.success) {
+          alertEl.textContent = data.message || 'Jika akun ditemukan, link reset dikirim ke email.';
+          alertEl.classList.add('success','show');
+          if (data._devToken) {
+            const pre = document.createElement('pre');
+            pre.style.marginTop = '10px';
+            pre.style.fontSize = '11px';
+            pre.style.background = '#FEF3C7';
+            pre.style.border = '1px solid #FDE68A';
+            pre.style.padding = '8px';
+            pre.style.borderRadius = '6px';
+            pre.style.whiteSpace = 'pre-wrap';
+            pre.style.wordBreak = 'break-all';
+            pre.textContent = '[DEV] ' + (data._devNote || '') + '\nReset link: /admin/reset.html?token=' + data._devToken;
+            alertEl.appendChild(pre);
+          }
+        } else {
+          alertEl.textContent = data.message || 'Gagal memproses permintaan reset.';
+          alertEl.classList.add('error','show');
         }
-      } else {
-        alertEl.textContent = data.message || 'Gagal memproses permintaan reset.';
+      } catch (err) {
+        console.error('[forgot] fetch error:', err);
+        alertEl.textContent = 'Tidak dapat terhubung ke server: ' + err.message;
         alertEl.classList.add('error','show');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Kirim Link Reset'; }
       }
     });
   </script>
