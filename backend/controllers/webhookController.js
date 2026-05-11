@@ -162,12 +162,33 @@ exports.handleIncomingMessage = async (data) => {
 };
 
 /**
- * HTTP Webhook endpoint (untuk Fonnte / external WA API fallback)
+ * HTTP Webhook endpoint (untuk wa-bridge / Fonnte / external WA API)
  * POST /api/webhook/whatsapp
+ *
+ * Auth: must include the bridge secret either as `X-WA-Secret` header (preferred,
+ * matches wa-bridge/index.js forwardIncoming) or `secret` body field (Fonnte-style).
+ * Without this check, ANY internet visitor could POST fake incoming messages and
+ * fabricate customer records — see audit point #1.
  */
 exports.handleWhatsAppWebhook = async (req, res) => {
     try {
-        console.log('[WEBHOOK HTTP] Received:', JSON.stringify(req.body, null, 2));
+        const expected = process.env.WA_BRIDGE_SECRET;
+        if (!expected) {
+            console.error('[WEBHOOK] WA_BRIDGE_SECRET is not configured — refusing all webhook traffic');
+            return res.status(503).json({ success: false, message: 'Webhook auth not configured' });
+        }
+        const provided = req.headers['x-wa-secret'] || req.body?.secret;
+        if (provided !== expected) {
+            console.warn('[WEBHOOK] Rejected unauthenticated webhook from', req.ip);
+            return res.status(401).json({ success: false, message: 'Invalid webhook secret' });
+        }
+
+        // Don't log full body in production — contains PII (phone + message). Log just sender prefix.
+        if (process.env.NODE_ENV !== 'production') {
+            console.log('[WEBHOOK HTTP] Received:', JSON.stringify(req.body, null, 2));
+        } else {
+            console.log('[WEBHOOK HTTP] Received from', String(req.body?.sender || req.body?.phone || '').slice(0, 6) + '***');
+        }
 
         let data;
 

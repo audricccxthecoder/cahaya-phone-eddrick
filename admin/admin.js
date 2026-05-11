@@ -494,6 +494,20 @@ function toWITADate(date) {
     return d.toLocaleDateString('sv-SE', { timeZone: TIMEZONE }); // sv-SE gives YYYY-MM-DD
 }
 
+// Helper: escape HTML entities so user-supplied values (customer names, addresses,
+// incoming WA message content, etc.) can't break out of an attribute or inject a
+// <script> tag. Use this for ANY value that originated from a form, webhook, or
+// other untrusted source before interpolating into innerHTML.
+function esc(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Helper: format date in Indonesian locale with WITA timezone
 function formatTanggal(date, options = {}) {
     const defaults = { timeZone: TIMEZONE };
@@ -867,23 +881,23 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
             html += `<tr>
-                <td>${customer.nama_lengkap}</td>
-                <td style="white-space:nowrap;">${customer.whatsapp} <a href="https://wa.me/${customer.whatsapp}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;background:#25D366;color:#fff;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:600;text-decoration:none;vertical-align:middle;margin-left:4px;">WA</a></td>`;
+                <td>${esc(customer.nama_lengkap)}</td>
+                <td style="white-space:nowrap;">${esc(customer.whatsapp)} <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;background:#25D366;color:#fff;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:600;text-decoration:none;vertical-align:middle;margin-left:4px;">WA</a></td>`;
 
             if (isBelanja) {
                 const produk = customer.merk_unit && customer.tipe_unit
-                    ? `${customer.merk_unit} ${customer.tipe_unit}` : '-';
+                    ? `${esc(customer.merk_unit)} ${esc(customer.tipe_unit)}` : '-';
                 const harga = customer.harga
                     ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(customer.harga) : '-';
-                html += `<td>${customer.nama_sales || '-'}</td>
+                html += `<td>${esc(customer.nama_sales || '-')}</td>
                     <td>${produk}</td>
                     <td>${harga}</td>`;
             } else {
-                html += `<td>${customer.catatan || '-'}</td>`;
+                html += `<td>${esc(customer.catatan || '-')}</td>`;
             }
 
-            html += `<td><span class="badge ${sourceClass}">${customer.source}</span></td>
-                <td><span class="badge ${statusClass}">${customer.status}</span></td>
+            html += `<td><span class="badge ${sourceClass}">${esc(customer.source)}</span></td>
+                <td><span class="badge ${statusClass}">${esc(customer.status)}</span></td>
                 <td>${time}</td>
                 <td><button class="btn-small" data-cid="${customer.id}" onclick="viewCustomer(${customer.id})" style="cursor:pointer;">Detail</button></td>
             </tr>`;
@@ -1029,26 +1043,25 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             html += `<tr>
                 <td>${start + index + 1}</td>
-                <td>${customer.nama_lengkap}${repeatBadge}</td>
-                <td style="white-space:nowrap;">${customer.whatsapp} <a href="https://wa.me/${customer.whatsapp}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;background:#25D366;color:#fff;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:600;text-decoration:none;vertical-align:middle;margin-left:4px;" title="Chat WhatsApp">WA</a></td>`;
+                <td>${esc(customer.nama_lengkap)}${repeatBadge}</td>
+                <td style="white-space:nowrap;">${esc(customer.whatsapp)} <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;background:#25D366;color:#fff;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:600;text-decoration:none;vertical-align:middle;margin-left:4px;" title="Chat WhatsApp">WA</a></td>`;
 
             if (isBelanja) {
                 const produk = customer.merk_unit && customer.tipe_unit
-                    ? `${customer.merk_unit} ${customer.tipe_unit}` : '-';
+                    ? `${esc(customer.merk_unit)} ${esc(customer.tipe_unit)}` : '-';
                 const harga = customer.harga
                     ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(customer.harga) : '-';
-                html += `<td>${customer.nama_sales || '-'}</td>
+                html += `<td>${esc(customer.nama_sales || '-')}</td>
                     <td>${produk}</td>
                     <td>${harga}</td>
-                    <td>${customer.metode_pembayaran || '-'}</td>`;
+                    <td>${esc(customer.metode_pembayaran || '-')}</td>`;
             } else {
-                // Catatan editable for Chat Only
-                const catVal = (customer.catatan || '').replace(/"/g, '&quot;');
-                html += `<td><input type="text" value="${catVal}" placeholder="Tulis catatan..." style="border:1px solid #EDE8E3;padding:6px 10px;border-radius:6px;font-size:13px;width:100%;min-width:180px;background:#FAFAF8;" onblur="saveCatatan(${customer.id}, this.value)" onkeydown="if(event.key==='Enter'){this.blur();}"></td>`;
+                // Catatan editable for Chat Only — value goes into an attribute, so esc() handles quote/lt/gt
+                html += `<td><input type="text" value="${esc(customer.catatan || '')}" placeholder="Tulis catatan..." style="border:1px solid #EDE8E3;padding:6px 10px;border-radius:6px;font-size:13px;width:100%;min-width:180px;background:#FAFAF8;" onblur="saveCatatan(${customer.id}, this.value)" onkeydown="if(event.key==='Enter'){this.blur();}"></td>`;
             }
 
-            html += `<td><span class="badge ${sourceClass}">${customer.source}</span></td>
-                <td><span class="badge ${statusClass}">${customer.status}</span></td>
+            html += `<td><span class="badge ${sourceClass}">${esc(customer.source)}</span></td>
+                <td><span class="badge ${statusClass}">${esc(customer.status)}</span></td>
                 <td style="text-align:center;font-size:18px;">${waIcon}</td>
                 <td>${date}</td>
                 <td><div class="table-actions">
@@ -1270,12 +1283,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                     return `
                                     <tr style="background:${i % 2 === 0 ? '#fff' : '#FAFAF8'};">
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;">${formatTanggal(p.created_at)}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:600;color:#B91C1C;">${p.merk_unit || '-'}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${p.tipe_unit || '-'}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:600;color:#B91C1C;">${esc(p.merk_unit || '-')}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${esc(p.tipe_unit || '-')}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;font-weight:600;">${q}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${h ? formatRpDetail(h) : '-'}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:600;color:#B91C1C;">${h ? formatRpDetail(h * q) : '-'}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${p.nama_sales || '-'}</td>
+                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${esc(p.nama_sales || '-')}</td>
                                     </tr>
                                 `;
                                 }).join('')}
@@ -1290,13 +1303,13 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
                 <div class="detail-group">
                     <div class="detail-label">Nama Lengkap</div>
-                    <div class="detail-value">${customer.nama_lengkap}</div>
+                    <div class="detail-value">${esc(customer.nama_lengkap)}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">WhatsApp</div>
                     <div class="detail-value" style="display:flex;align-items:center;gap:8px;">
-                        ${customer.whatsapp}
-                        <a href="https://wa.me/${customer.whatsapp}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Chat</a>
+                        ${esc(customer.whatsapp)}
+                        <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Chat</a>
                     </div>
                 </div>
                 <div class="detail-group">
@@ -1305,11 +1318,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Alamat</div>
-                    <div class="detail-value">${customer.alamat || '-'}</div>
+                    <div class="detail-value">${esc(customer.alamat || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Produk Terakhir</div>
-                    <div class="detail-value">${(customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-'}</div>
+                    <div class="detail-value">${esc((customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Harga Terakhir</div>
@@ -1317,19 +1330,19 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Metode Bayar</div>
-                    <div class="detail-value">${customer.metode_pembayaran || '-'}</div>
+                    <div class="detail-value">${esc(customer.metode_pembayaran || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Sales</div>
-                    <div class="detail-value">${customer.nama_sales || '-'}</div>
+                    <div class="detail-value">${esc(customer.nama_sales || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Tahu dari</div>
-                    <div class="detail-value">${customer.tahu_dari || '-'}</div>
+                    <div class="detail-value">${esc(customer.tahu_dari || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Source</div>
-                    <div class="detail-value"><span class="badge ${sourceClass}">${customer.source}</span></div>
+                    <div class="detail-value"><span class="badge ${sourceClass}">${esc(customer.source)}</span></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Status</div>
@@ -1676,10 +1689,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             html += `
                 <tr>
                     <td>${index + 1}</td>
-                    <td>${msg.nama_lengkap}</td>
-                    <td>${msg.whatsapp}</td>
+                    <td>${esc(msg.nama_lengkap)}</td>
+                    <td>${esc(msg.whatsapp)}</td>
                     <td><span class="badge ${directionClass}">${directionText}</span></td>
-                    <td style="max-width: 300px;">${msg.message}</td>
+                    <td style="max-width: 300px;">${esc(msg.message)}</td>
                     <td>${time}</td>
                 </tr>
             `;
@@ -1948,9 +1961,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>';
         res.data.forEach(c => {
             html += `<tr>
-                <td>${c.nama_lengkap}</td>
-                <td>${c.whatsapp}</td>
-                <td><span class="badge">${c.tipe || 'Belanja'}</span></td>
+                <td>${esc(c.nama_lengkap)}</td>
+                <td>${esc(c.whatsapp)}</td>
+                <td><span class="badge">${esc(c.tipe || 'Belanja')}</span></td>
                 <td><button class="btn-small" style="padding:4px 12px;font-size:11px;" onclick="retrySingleWA(${c.id})">Kirim Ulang</button></td>
             </tr>`;
         });
@@ -2225,8 +2238,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 }
 
                 html += `<tr>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${c.nama_lengkap}</td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-size:13px;">${c.whatsapp}</td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${esc(c.nama_lengkap)}</td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-size:13px;">${esc(c.whatsapp)}</td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-size:13px;">${tgl}</td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${statusBadge}</td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;">${actionBtn}</td>
@@ -2326,12 +2339,14 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 } else {
                     badge = '<span style="background:#FEE2E2;color:#DC2626;padding:2px 8px;border-radius:6px;font-size:11px;">Gagal</span>';
                     if (h.error) {
-                        badge += `<br><span style="font-size:10px;color:#DC2626;" title="${h.error}">${h.error.length > 25 ? h.error.substring(0, 25) + '...' : h.error}</span>`;
+                        const errEsc = esc(h.error);
+                        const errShort = h.error.length > 25 ? esc(h.error.substring(0, 25)) + '...' : errEsc;
+                        badge += `<br><span style="font-size:10px;color:#DC2626;" title="${errEsc}">${errShort}</span>`;
                     }
                 }
 
                 html += `<tr>
-                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;font-size:13px;">${h.nama_lengkap}</td>
+                    <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;font-size:13px;">${esc(h.nama_lengkap)}</td>
                     <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;font-size:13px;">${tgl}</td>
                     <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;font-size:13px;text-align:center;">${h.greeting_year}</td>
                     <td style="padding:8px 6px;border-bottom:1px solid #F5F3F0;text-align:center;">${badge}</td>
@@ -2400,8 +2415,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             data.forEach((row, i) => {
                 html += `<tr>
                     <td>${i + 1}</td>
-                    <td><strong>${row.nama_lengkap}</strong></td>
-                    <td>${row.whatsapp}</td>
+                    <td><strong>${esc(row.nama_lengkap)}</strong></td>
+                    <td>${esc(row.whatsapp)}</td>
                     <td><span style="background:#B91C1C;color:#fff;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;">${row.total_purchases}x</span></td>
                     <td style="font-weight:600;">${formatRp(row.total_spent)}</td>
                     <td><button class="btn-small" onclick="viewCustomer(${row.id})">Detail</button></td>
@@ -2428,7 +2443,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 const pct = maxSold > 0 ? (Number(row.total_sold) / maxSold * 100) : 0;
                 html += `<tr>
                     <td>${i + 1}</td>
-                    <td><strong>${row.merk_unit || '-'}</strong> ${row.tipe_unit || ''}</td>
+                    <td><strong>${esc(row.merk_unit || '-')}</strong> ${esc(row.tipe_unit || '')}</td>
                     <td><span style="background:rgba(185,28,28,0.08);color:#B91C1C;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;">${row.total_sold}x</span></td>
                     <td style="font-weight:500;">${formatRp(row.total_revenue)}</td>
                     <td style="width:150px;">

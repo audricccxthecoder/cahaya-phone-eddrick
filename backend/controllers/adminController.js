@@ -157,7 +157,7 @@ exports.login = async (req, res) => {
         const token = jwt.sign(
             { id: admin.id, username: admin.username, role: admin.role || 'staff' },
             process.env.JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '4h' }
         );
 
         console.log('✅ Login successful:', username, '| role:', admin.role);
@@ -637,7 +637,7 @@ exports.createAdmin = async (req, res) => {
         const { rows: dupE } = await db.query('SELECT id FROM admins WHERE LOWER(email) = $1', [cleanEmail]);
         if (dupE.length) return res.status(409).json({ success: false, message: 'Email sudah dipakai' });
 
-        const hashed = await bcrypt.hash(String(password), 10);
+        const hashed = await bcrypt.hash(String(password), 12);
         const { rows } = await db.query(
             `INSERT INTO admins (username, password, nama, email, role)
              VALUES ($1, $2, $3, $4, 'staff')
@@ -685,7 +685,7 @@ exports.updateAdmin = async (req, res) => {
         }
         if (password) {
             if (String(password).length < 6) return res.status(400).json({ success: false, message: 'Password minimal 6 karakter' });
-            const hashed = await bcrypt.hash(String(password), 10);
+            const hashed = await bcrypt.hash(String(password), 12);
             updates.push(`password = $${i++}`); params.push(hashed);
         }
 
@@ -778,7 +778,7 @@ exports.changeCredentials = async (req, res) => {
         let passwordChanged = false;
         if (new_password) {
             if (String(new_password).length < 6) return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
-            const hashed = await bcrypt.hash(new_password, 10);
+            const hashed = await bcrypt.hash(new_password, 12);
             updates.push(`password = $${paramCount++}`); params.push(hashed);
             passwordChanged = true;
         }
@@ -791,7 +791,7 @@ exports.changeCredentials = async (req, res) => {
         const token = jwt.sign(
             { id: adminId, username: new_username ? String(new_username).trim() : admin.username, role: admin.role || 'staff' },
             process.env.JWT_SECRET,
-            { expiresIn: '24h' }
+            { expiresIn: '4h' }
         );
 
         const responseData = {
@@ -1472,7 +1472,7 @@ exports.resetPassword = async (req, res) => {
         if (rec.used) return res.status(400).json({ success: false, message: 'Token already used' });
         if (new Date(rec.expires_at) < new Date()) return res.status(400).json({ success: false, message: 'Token expired' });
 
-        const hash = await bcrypt.hash(new_password, 10);
+        const hash = await bcrypt.hash(new_password, 12);
         await db.query('UPDATE admins SET password = $1 WHERE id = $2', [hash, rec.admin_id]);
         await db.query('UPDATE admin_reset_tokens SET used = TRUE WHERE id = $1', [rec.id]);
 

@@ -1,7 +1,34 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const path = require('path');
 require('dotenv').config();
+
+// ============================================
+// BOOT-TIME SECRET VALIDATION (fix #5)
+// Fail fast if critical secrets are missing or obviously weak.
+// ============================================
+(function validateSecrets() {
+    const jwtSecret = process.env.JWT_SECRET || '';
+    if (!jwtSecret || jwtSecret.length < 32) {
+        console.error('[BOOT] JWT_SECRET missing or too short (<32 chars). Refusing to start.');
+        process.exit(1);
+    }
+    if (jwtSecret === 'your_super_secret_jwt_key_here_change_in_production') {
+        console.error('[BOOT] JWT_SECRET is still the example value. Refusing to start.');
+        process.exit(1);
+    }
+    if (process.env.NODE_ENV === 'production') {
+        if (!process.env.WA_BRIDGE_SECRET) {
+            console.error('[BOOT] WA_BRIDGE_SECRET required in production. Refusing to start.');
+            process.exit(1);
+        }
+        if (!process.env.ALLOWED_ORIGINS) {
+            console.error('[BOOT] ALLOWED_ORIGINS required in production (don\'t leave CORS open). Refusing to start.');
+            process.exit(1);
+        }
+    }
+})();
 
 // ============================================
 // GLOBAL ERROR HANDLERS — prevent server crash
@@ -23,8 +50,32 @@ app.set('trust proxy', 1);
 // ============================================
 // MIDDLEWARE
 // ============================================
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// Helmet — sets security headers (X-Frame-Options, X-Content-Type-Options, HSTS, etc.)
+// CSP is configured manually because admin uses inline event handlers (onclick=...) and
+// inline <style> blocks; locking those down would require a much bigger refactor.
+app.use(helmet({
+    contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+            'default-src': ["'self'"],
+            'script-src': ["'self'", "'unsafe-inline'"], // admin frontend uses inline onclick
+            'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+            'font-src': ["'self'", 'https://fonts.gstatic.com'],
+            'img-src': ["'self'", 'data:', 'https:'],
+            'connect-src': ["'self'", 'https:'],
+            'frame-ancestors': ["'none'"],
+            'object-src': ["'none'"]
+        }
+    },
+    crossOriginEmbedderPolicy: false, // would block fonts.googleapis.com
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+
+// Cap request body at 50kb — legitimate form/webhook payloads are well under 5kb.
+// Without this cap a bot can POST 100kb bodies repeatedly to fill the DB / OOM the process.
+app.use(express.json({ limit: '50kb' }));
+app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 
 // CORS — izinkan frontend Vercel mengakses backend Railway
 const allowedOrigins = process.env.ALLOWED_ORIGINS
@@ -35,19 +86,19 @@ app.use(cors({
     origin: function(origin, callback) {
         // Allow requests with no origin (mobile apps, curl, server-to-server)
         if (!origin) return callback(null, true);
-        // Allow configured origins only (ALLOWED_ORIGINS di .env)
-        if (allowedOrigins.length === 0) {
-            // Dev mode: belum dikonfigurasi, allow all
-            return callback(null, true);
+        // In production, ALLOWED_ORIGINS must be set (validated at boot) and is the only allowlist.
+        if (process.env.NODE_ENV === 'production') {
+            if (allowedOrigins.includes(origin)) return callback(null, true);
+            return callback(new Error(`Origin ${origin} not allowed by CORS`));
         }
-        if (allowedOrigins.includes(origin)) {
-            return callback(null, true);
-        }
+        // Dev mode: if ALLOWED_ORIGINS not set, allow all for convenience
+        if (allowedOrigins.length === 0) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
         return callback(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Sync-Key', 'X-WA-Secret']
 }));
 
 // ============================================

@@ -29,16 +29,36 @@ const formLimiter = rateLimit({
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 10,
+    max: 5,
     message: { success: false, message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.' },
     standardHeaders: true,
-    legacyHeaders: false
+    legacyHeaders: false,
+    skipSuccessfulRequests: true   // only failed logins count toward the limit
 });
 
 const forgotLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 5,
     message: { success: false, message: 'Terlalu banyak permintaan reset password. Coba lagi dalam 1 jam.' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// Reset (token redemption) — block brute force on the reset token endpoint.
+const resetLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: { success: false, message: 'Terlalu banyak percobaan reset. Coba lagi dalam 15 menit.' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// Webhook — even though it's now secret-gated, throttle to slow down credential-stuffing
+// attempts if the secret ever leaks.
+const webhookLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,                // 60 incoming webhook events per minute is well above any real burst
+    message: { success: false, message: 'Webhook rate limit exceeded' },
     standardHeaders: true,
     legacyHeaders: false
 });
@@ -50,8 +70,9 @@ const forgotLimiter = rateLimit({
 // Customer form submission (rate limited)
 router.post('/form-submit', formLimiter, formController.submitForm);
 
-// WhatsApp webhook — incoming messages from wa-bridge (Baileys)
-router.post('/webhook/whatsapp', webhookController.handleWhatsAppWebhook);
+// WhatsApp webhook — incoming messages from wa-bridge (Baileys).
+// Auth check is inside the handler (verifies X-WA-Secret); rate limit caps abuse.
+router.post('/webhook/whatsapp', webhookLimiter, webhookController.handleWhatsAppWebhook);
 router.get('/webhook/test', webhookController.testWebhook);
 
 // Quick-sync contacts (protected by secret key in Authorization header)
@@ -85,8 +106,8 @@ router.delete('/admin/admins/:id', authMiddleware, adminController.deleteAdmin);
 
 // Forgot password / reset (rate limited)
 router.post('/admin/forgot', forgotLimiter, adminController.forgotPassword);
-router.get('/admin/reset/validate', adminController.validateResetToken);
-router.post('/admin/reset', adminController.resetPassword);
+router.get('/admin/reset/validate', resetLimiter, adminController.validateResetToken);
+router.post('/admin/reset', resetLimiter, adminController.resetPassword);
 
 // ============================================
 // PROTECTED ROUTES (Authentication required)

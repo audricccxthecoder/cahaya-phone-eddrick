@@ -30,6 +30,23 @@ exports.submitForm = async (req, res) => {
             });
         }
 
+        // Per-field length caps (DoS guard + sanity check). Any field exceeding the cap
+        // is rejected outright — legitimate values are well within these limits.
+        const lengthCaps = {
+            nama: 100, nama_lengkap: 100, email: 120, alamat: 300, kota: 60,
+            nama_sales: 60, merk_unit: 60, tipe_unit: 80, tahu_dari: 100,
+            metode_pembayaran: 40
+        };
+        for (const [field, max] of Object.entries(lengthCaps)) {
+            const v = req.body[field];
+            if (typeof v === 'string' && v.length > max) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Field "${field}" terlalu panjang (maks ${max} karakter).`
+                });
+            }
+        }
+
         // Sanitize & validate phone number (backend validation)
         const cleanPhone = sanitizePhone(whatsapp);
         const phoneCheck = validatePhone(cleanPhone);
