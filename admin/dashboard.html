@@ -50,6 +50,27 @@
         <!-- Dashboard Page -->
         <div id="dashboardPage" class="page active">
 
+            <!-- Railway Billing Reminder Banner — auto-shows H-3, H-2, H-1, H, and up to H+2 -->
+            <div id="billingBanner" style="display:none;padding:14px 20px;border-radius:10px;margin-bottom:16px;border:1px solid;">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+                    <div style="display:flex;align-items:flex-start;gap:10px;flex:1;min-width:0;">
+                        <span id="billingIcon" style="font-size:22px;line-height:1;">💳</span>
+                        <div style="min-width:0;flex:1;">
+                            <strong id="billingTitle" style="font-size:14px;display:block;margin-bottom:3px;"></strong>
+                            <p id="billingMessage" style="margin:0;font-size:12px;line-height:1.5;"></p>
+                            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+                                <a href="https://railway.app/dashboard" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:5px;padding:5px 12px;background:#fff;border:1px solid currentColor;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;color:inherit;">
+                                    Buka Railway Dashboard →
+                                </a>
+                                <button id="billingDismiss" type="button" style="padding:5px 12px;background:transparent;border:1px solid currentColor;border-radius:6px;font-size:11px;font-weight:500;cursor:pointer;color:inherit;">
+                                    Tutup hari ini
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- WA Disconnect Banner -->
             <div id="waDisconnectBanner" style="display:none;background:linear-gradient(135deg,#FEE2E2,#FECACA);border:1px solid #DC2626;padding:14px 20px;border-radius:10px;margin-bottom:16px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">

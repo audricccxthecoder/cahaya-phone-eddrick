@@ -754,6 +754,47 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // DASHBOARD
     // ============================================
 
+    // Railway billing reminder banner. Calls /admin/billing-status and renders
+    // a colored banner at top of dashboard when within 3 days of billing (or up
+    // to 2 days past). Severity → color: info (blue) → warning (amber) →
+    // urgent (red) → overdue (red gradient). Dismissable per-day via localStorage.
+    async function loadBillingBanner() {
+        try {
+            const result = await apiCall('/admin/billing-status');
+            if (!result || !result.success || !result.data.show) return;
+
+            const data = result.data;
+            const today = new Date().toISOString().slice(0, 10);
+            const dismissed = localStorage.getItem('billingBannerDismissedDate');
+            if (dismissed === today) return;  // user dismissed today, respect that
+
+            const banner = document.getElementById('billingBanner');
+            if (!banner) return;
+
+            const palette = {
+                info:    { bg: '#EFF6FF', border: '#BFDBFE', color: '#1E40AF', icon: '💳' },
+                warning: { bg: '#FEF3C7', border: '#FDE68A', color: '#92400E', icon: '⏰' },
+                urgent:  { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B', icon: '🚨' },
+                overdue: { bg: '#FEE2E2', border: '#DC2626', color: '#7F1D1D', icon: '⚠️' }
+            }[data.severity] || { bg: '#F3F4F6', border: '#D1D5DB', color: '#374151', icon: '💳' };
+
+            banner.style.background = palette.bg;
+            banner.style.borderColor = palette.border;
+            banner.style.color = palette.color;
+            document.getElementById('billingIcon').textContent = palette.icon;
+            document.getElementById('billingTitle').textContent = esc(data.title);
+            document.getElementById('billingMessage').textContent = esc(data.message);
+            banner.style.display = 'block';
+
+            document.getElementById('billingDismiss').onclick = () => {
+                localStorage.setItem('billingBannerDismissedDate', today);
+                banner.style.display = 'none';
+            };
+        } catch (e) {
+            console.warn('loadBillingBanner failed:', e.message);
+        }
+    }
+
     // Load global auto-send toggles (form auto-reply + birthday auto-send)
     async function loadAutoToggles() {
         try {
@@ -787,6 +828,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             // Load global toggles (non-blocking)
             loadAutoToggles();
+
+            // Railway billing reminder banner — fires only on H-3..H+2 (else no-op).
+            loadBillingBanner();
 
             // Load statistics
             const stats = await apiCall('/admin/stats');

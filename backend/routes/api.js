@@ -12,7 +12,6 @@ const webhookController = require('../controllers/webhookController');
 const adminController = require('../controllers/adminController');
 const googleController = require('../controllers/googleController');
 const birthdayController = require('../controllers/birthdayController');
-const billingReminderController = require('../controllers/billingReminderController');
 
 // Middleware
 const authMiddleware = require('../config/authMiddleware');
@@ -175,8 +174,8 @@ router.post('/admin/cleanup/delete', authMiddleware, auditLog('cleanup_delete'),
 // Audit trail
 router.get('/admin/audit-log', authMiddleware, adminController.getAuditLog);
 
-// Billing reminder — manual test (?type=h3 or ?type=h). Owner-only via authMiddleware.
-router.post('/admin/billing-reminder/test', authMiddleware, billingReminderController.testReminder);
+// Billing status — used by dashboard banner to show H-3 / H / overdue warning
+router.get('/admin/billing-status', authMiddleware, adminController.getBillingStatus);
 
 // App settings — global auto toggles
 router.get('/admin/settings/auto-toggles', authMiddleware, adminController.getAutoToggles);
