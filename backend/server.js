@@ -5,6 +5,13 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 require('dotenv').config();
 
+// Force IPv4-first DNS resolution globally. Railway's outbound network doesn't
+// route IPv6 — without this, Node's DNS happily returns AAAA records first and
+// every outbound TCP connect (SMTP, external APIs, etc.) fails with ENETUNREACH.
+// This is the single most-tested fix for "ENETUNREACH 2607:f8b0:...:587" on
+// Railway / Heroku / Fly / similar PaaS.
+require('dns').setDefaultResultOrder('ipv4first');
+
 const { csrfProtection } = require('./config/csrfMiddleware');
 
 // ============================================
