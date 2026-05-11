@@ -61,10 +61,10 @@ const CONFIG = {
     workStartHour: 8,     // 08:00 start
     workEndHour: 22,      // stop at 22:00 (do not send after)
 
-    // Broadcast delays (milliseconds)
+    // Broadcast delays (milliseconds) — ~3 minutes per message
     broadcast: {
-        warmupDelay:  { min: 90_000,  max: 180_000 },  // first 20 of day
-        normalDelay:  { min: 120_000, max: 240_000 },  // after warm-up
+        warmupDelay:  { min: 200_000, max: 240_000 },  // first 20 of day (slightly slower)
+        normalDelay:  { min: 165_000, max: 195_000 },  // ~3 min ± 15s after warm-up
         warmupThreshold: 20,                            // first 20 msgs = warm-up
 
         // Break: every 25-30 messages, pause 15-30 min
@@ -73,18 +73,17 @@ const CONFIG = {
         breakDuration: { min: 15 * 60_000, max: 30 * 60_000 }
     },
 
-    // Auto-reply queue: form thank-you messages, gentler than broadcast since
-    // these are 1-to-1 responses, but still throttled (worst case 100-150/day).
+    // Auto-reply queue — ~5 minutes per message (very conservative)
     autoReply: {
-        delay: { min: 60_000, max: 120_000 },              // 60-120s between auto-replies
-        breakEveryMin: 25,                                  // break every 25-30 msgs
-        breakEveryMax: 30,
-        breakDuration: { min: 10 * 60_000, max: 15 * 60_000 } // 10-15 min break
+        delay: { min: 270_000, max: 330_000 },              // 4:30–5:30 (~5 min)
+        breakEveryMin: 20,                                   // break every 20-25 msgs
+        breakEveryMax: 25,
+        breakDuration: { min: 15 * 60_000, max: 25 * 60_000 } // 15-25 min break
     },
 
-    // Birthday delays
+    // Birthday delays — ~3 minutes per message
     birthday: {
-        delay: { min: 110_000, max: 130_000 },             // ~2 min ± 10s per message
+        delay: { min: 165_000, max: 195_000 },             // ~3 min ± 15s per message
         breakEveryMin: 18,                                  // break every 18-22 msgs
         breakEveryMax: 22,
         breakDuration: { min: 10 * 60_000, max: 15 * 60_000 } // 10-15 min break

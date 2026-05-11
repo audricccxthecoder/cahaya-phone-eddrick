@@ -9,8 +9,8 @@ const whatsappService = require('../config/whatsapp');
 const DEFAULT_MESSAGE = `Halo Kak {nama}! 🎂🎉\n\nSelamat Ulang Tahun dari kami *CAHAYA PHONE* Gorontalo!\n\nSemoga panjang umur, sehat selalu, dan diberkahi rezeki yang melimpah. Terima kasih sudah menjadi pelanggan setia kami.\n\nSalam hangat,\nCahaya Phone 🙏`;
 
 // Anti-ban pacing for birthday sends
-const BIRTHDAY_DELAY_MIN_MS = 110_000;   // ~2 min ± 10s per message
-const BIRTHDAY_DELAY_MAX_MS = 130_000;
+const BIRTHDAY_DELAY_MIN_MS = 165_000;   // ~3 min ± 15s per message
+const BIRTHDAY_DELAY_MAX_MS = 195_000;
 const BIRTHDAY_BREAK_EVERY = 20;          // break after every 20 messages
 const BIRTHDAY_BREAK_MIN_MS = 10 * 60_000; // 10 min
 const BIRTHDAY_BREAK_MAX_MS = 15 * 60_000; // 15 min
@@ -134,7 +134,7 @@ exports.sendAllGreetings = async (req, res) => {
         // Respond immediately so admin tab doesn't hang for hours on 50+ customers
         res.json({
             success: true,
-            message: `Memproses ${pending.length} ucapan di background dengan delay ~2 menit/pesan + break 10–15 menit tiap ${BIRTHDAY_BREAK_EVERY} pesan. Pantau di Riwayat.`,
+            message: `Memproses ${pending.length} ucapan di background dengan delay ~3 menit/pesan + break 10–15 menit tiap ${BIRTHDAY_BREAK_EVERY} pesan. Pantau di Riwayat.`,
             queued: pending.length
         });
 
