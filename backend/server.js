@@ -238,5 +238,16 @@ if (process.env.VERCEL) {
             console.log('[Cron] Running birthday safety-net retry...');
             birthdayController.cronCheckBirthdays();
         }, { timezone: 'Asia/Makassar' });
+
+        // Railway billing reminder — daily 09:00 WITA check, fires WA reminder to
+        // owner on H-3 and H of BILLING_DAY (default tgl 11). Single cron handles
+        // both events; the controller decides which template to send based on
+        // today's date. No-op on all other days.
+        const billingReminderController = require('./controllers/billingReminderController');
+        cron.schedule('0 9 * * *', () => {
+            billingReminderController.cronDailyCheck()
+                .catch(err => console.warn('[BillingReminder] Cron error:', err.message));
+        }, { timezone: 'Asia/Makassar' });
+        console.log(`[Cron] Billing reminder scheduled: daily 09:00 WITA (H-3 + H of BILLING_DAY=${process.env.BILLING_DAY || 11})`);
     });
 }

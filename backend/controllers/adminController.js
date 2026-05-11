@@ -909,13 +909,8 @@ exports.forgotPassword = async (req, res) => {
         const isDev = process.env.NODE_ENV !== 'production';
 
         if (process.env.MAIL_HOST && process.env.MAIL_USER) {
-            // Resolve to IPv4 explicitly. The previous attempt (family:4 option on
-            // nodemailer) didn't stick on Railway — Node's DNS still returned an
-            // AAAA record first and nodemailer tried to connect to it, failing with
-            // ENETUNREACH because Railway doesn't route outbound IPv6. Doing the
-            // lookup ourselves and passing the literal IPv4 address as `host`
-            // sidesteps the entire DNS-preference question. `tls.servername`
-            // preserves SNI so the TLS cert still validates against smtp.gmail.com.
+            // Resolve to IPv4 explicitly — Railway's outbound network doesn't route
+            // IPv6, and Node's DNS resolver returns AAAA first by default.
             const dns = require('dns').promises;
             let mailHostV4 = process.env.MAIL_HOST;
             try {
@@ -923,21 +918,28 @@ exports.forgotPassword = async (req, res) => {
                 mailHostV4 = lookup.address;
                 console.log(`[Mail] Resolved ${process.env.MAIL_HOST} → ${mailHostV4} (IPv4)`);
             } catch (lookupErr) {
-                console.warn(`[Mail] IPv4 lookup failed for ${process.env.MAIL_HOST}: ${lookupErr.message}; using hostname as-is`);
+                console.warn(`[Mail] IPv4 lookup failed: ${lookupErr.message}; using hostname as-is`);
             }
+
+            // Port logic: 465 = implicit TLS (secure:true), 587 = STARTTLS (secure:false).
+            // 465 tends to work more reliably on Railway because no STARTTLS handshake
+            // dance is needed — TCP connect + TLS in one shot. If user sets MAIL_SECURE
+            // explicitly we honor it; otherwise auto-derive from the port.
+            const port = Number(process.env.MAIL_PORT) || 465;
+            const secure = process.env.MAIL_SECURE !== undefined
+                ? process.env.MAIL_SECURE === 'true'
+                : port === 465;
 
             const transporter = nodemailer.createTransport({
                 host: mailHostV4,
-                port: Number(process.env.MAIL_PORT) || 587,
-                secure: (process.env.MAIL_SECURE === 'true'),
+                port,
+                secure,
                 auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
-                tls: {
-                    // Preserve original hostname for SNI / cert validation
-                    servername: process.env.MAIL_HOST
-                },
-                connectionTimeout: 15_000,
-                greetingTimeout: 10_000,
-                socketTimeout: 20_000
+                tls: { servername: process.env.MAIL_HOST },  // preserve SNI
+                connectionTimeout: 30_000,   // bumped — Connection timeout was 15s
+                greetingTimeout: 15_000,
+                socketTimeout: 30_000,
+                pool: false                  // one-shot for occasional reset emails
             });
 
             const from = process.env.MAIL_FROM || process.env.MAIL_USER;
