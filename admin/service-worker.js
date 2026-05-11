@@ -4,7 +4,7 @@
 //   - API calls (/api/*): network-only (data must stay live)
 //   - Everything else: network-first, fallback to cache
 
-const CACHE_VERSION = 'cp-admin-v1';
+const CACHE_VERSION = 'cp-admin-v2';
 const SHELL_ASSETS = [
   '/admin/',
   '/admin/index.html',
@@ -12,9 +12,9 @@ const SHELL_ASSETS = [
   '/admin/admin.css',
   '/admin/admin.js',
   '/admin/manifest.json',
-  '/admin/icons/icon-192.svg',
-  '/admin/icons/icon-512.svg',
-  '/admin/icons/icon-maskable.svg',
+  '/admin/icons/icon-192.png',
+  '/admin/icons/icon-512.png',
+  '/admin/icons/icon-maskable.png',
   '/config.js'
 ];
 
