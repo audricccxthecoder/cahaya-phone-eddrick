@@ -108,12 +108,47 @@ class WhatsAppService {
     }
 
     // ============================================
-    // PUBLIC: Auto-reply after form submit
+    // PUBLIC: Auto-reply after form submit (LEGACY — sends immediately).
+    // Kept for backwards compat but no longer called from formController.
     // ============================================
     async sendAutoReply(customer) {
         const tmpl = await this._getAutoReplyTemplate();
         const message = tmpl.replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
         return this.sendText(customer.whatsapp, message, { typing: true, category: 'auto_reply', skipOptCheck: true });
+    }
+
+    // ============================================
+    // PUBLIC: Queue auto-reply for anti-ban-paced delivery via wa-worker.
+    // Worker drains queue at 60-120s intervals, with breaks every 25-30 sends,
+    // and respects 08:00-22:00 WITA working hours. Customer-facing form returns
+    // success immediately; the actual WA send happens minutes later.
+    // ============================================
+    async enqueueAutoReply(customer) {
+        const formattedNumber = sanitizePhone(customer.whatsapp);
+        if (!formattedNumber || !formattedNumber.startsWith('62')) {
+            return { success: false, error: 'Invalid phone number' };
+        }
+
+        const optedOut = await this._isOptedOut(formattedNumber);
+        if (optedOut) {
+            return { success: false, error: 'Customer telah opt-out', opted_out: true };
+        }
+
+        const tmpl = await this._getAutoReplyTemplate();
+        const message = tmpl.replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
+
+        try {
+            const { rows } = await db.query(
+                `INSERT INTO whatsapp_logs (phone, type, message_body, status, priority)
+                 VALUES ($1, 'auto_reply', $2, 'QUEUED', 'auto_reply')
+                 RETURNING id`,
+                [formattedNumber, message]
+            );
+            return { success: true, queued: true, log_id: rows[0].id };
+        } catch (err) {
+            console.warn('[WA] enqueueAutoReply failed:', err.message);
+            return { success: false, error: err.message };
+        }
     }
 
     // ============================================

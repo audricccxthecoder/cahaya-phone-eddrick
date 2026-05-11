@@ -58,8 +58,8 @@ const CONFIG = {
     tickInterval: 15_000, // 15s poll
 
     // Working hours in WITA (Asia/Makassar)
-    workStartHour: 7,     // 07:00 start
-    workEndHour: 21,      // stop at 21:00 (do not send after)
+    workStartHour: 8,     // 08:00 start
+    workEndHour: 22,      // stop at 22:00 (do not send after)
 
     // Broadcast delays (milliseconds)
     broadcast: {
@@ -71,6 +71,23 @@ const CONFIG = {
         breakEveryMin: 25,
         breakEveryMax: 30,
         breakDuration: { min: 15 * 60_000, max: 30 * 60_000 }
+    },
+
+    // Auto-reply queue: form thank-you messages, gentler than broadcast since
+    // these are 1-to-1 responses, but still throttled (worst case 100-150/day).
+    autoReply: {
+        delay: { min: 60_000, max: 120_000 },              // 60-120s between auto-replies
+        breakEveryMin: 25,                                  // break every 25-30 msgs
+        breakEveryMax: 30,
+        breakDuration: { min: 10 * 60_000, max: 15 * 60_000 } // 10-15 min break
+    },
+
+    // Birthday delays
+    birthday: {
+        delay: { min: 110_000, max: 130_000 },             // ~2 min ± 10s per message
+        breakEveryMin: 18,                                  // break every 18-22 msgs
+        breakEveryMax: 22,
+        breakDuration: { min: 10 * 60_000, max: 15 * 60_000 } // 10-15 min break
     },
 
     // Retry delays
@@ -92,13 +109,19 @@ class WAWorker {
         this.intervalId = null;
         this.processing = false;
 
-        // In-memory anti-ban state
+        // In-memory anti-ban state — broadcast
         this.msgsSinceLastBreak = 0;
         this.nextBreakAt = this._randomBreakThreshold();
         this.breakUntil = 0;              // epoch ms
         this.lastBroadcastSentAt = 0;     // epoch ms
         this.nextBroadcastAllowedAt = 0;  // epoch ms (enforces delay between messages)
         this.startedAt = 0;
+
+        // Auto-reply queue state (separate pacing from broadcast)
+        this.autoReplyMsgsSinceBreak = 0;
+        this.autoReplyNextBreakAt = this._randInt(CONFIG.autoReply.breakEveryMin, CONFIG.autoReply.breakEveryMax);
+        this.autoReplyBreakUntil = 0;
+        this.nextAutoReplyAllowedAt = 0;
     }
 
     async start() {
@@ -128,11 +151,104 @@ class WAWorker {
         this.processing = true;
         try {
             await this._retryFailed();
+            await this._processAutoReplyQueue();
             await this._processBroadcast();
         } catch (err) {
             console.error('[WA Worker] Cycle error:', err.message);
         } finally {
             this.processing = false;
+        }
+    }
+
+    // ============================================
+    // AUTO-REPLY QUEUE — queued form thank-you messages
+    // Picks one row per tick subject to: working hours, inter-message delay,
+    // and periodic break (so 100-150/day looks human, not bot).
+    // ============================================
+    async _processAutoReplyQueue() {
+        const now = Date.now();
+
+        if (now < this.autoReplyBreakUntil) return;       // in a break
+        if (!this._isWorkingHours()) return;              // outside 08-22 WITA
+        if (now < this.nextAutoReplyAllowedAt) return;    // still cooling down
+        if (now < this.nextBroadcastAllowedAt && this.lastBroadcastSentAt > 0) {
+            // If broadcast just sent, give it room — don't stack identical-looking sends
+            // back to back with broadcasts.
+        }
+
+        // Claim one queued auto-reply atomically
+        const client = await db.connect();
+        let row;
+        try {
+            await client.query('BEGIN');
+            const { rows } = await client.query(
+                `SELECT id, phone, message_body
+                 FROM whatsapp_logs
+                 WHERE status = 'QUEUED' AND priority = 'auto_reply'
+                 ORDER BY id ASC
+                 LIMIT 1
+                 FOR UPDATE SKIP LOCKED`
+            );
+            if (rows.length === 0) {
+                await client.query('COMMIT');
+                return;
+            }
+            row = rows[0];
+            await client.query(
+                `UPDATE whatsapp_logs SET status = 'SENDING', updated_at = NOW() WHERE id = $1`,
+                [row.id]
+            );
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            console.error('[WA Worker] Auto-reply claim error:', err.message);
+            return;
+        } finally {
+            client.release();
+        }
+
+        // Send via bridge directly (this log row already exists — don't double-log via sendText)
+        try {
+            const sendRes = await whatsappService._bridgeCall('POST', '/api/send', {
+                phone: row.phone,
+                message: row.message_body,
+                typing: true
+            });
+            const waMessageId = sendRes?.wa_message_id || null;
+
+            await db.query(
+                `UPDATE whatsapp_logs SET status = 'SENT', wa_message_id = $1, sent_at = NOW(), updated_at = NOW() WHERE id = $2`,
+                [waMessageId, row.id]
+            );
+            await whatsappService._incrementDailyCounter('sent');
+
+            // Mark the matching customer record so dashboard reflects "auto-reply delivered"
+            await db.query(
+                `UPDATE customers SET wa_sent = TRUE, status = 'Completed' WHERE whatsapp = $1 AND status = 'New'`,
+                [row.phone]
+            ).catch(() => {});
+
+            this.autoReplyMsgsSinceBreak += 1;
+            console.log(`[WA Worker] ✉️ Auto-reply sent to ${row.phone} (${this.autoReplyMsgsSinceBreak}/${this.autoReplyNextBreakAt} until break)`);
+        } catch (err) {
+            await db.query(
+                `UPDATE whatsapp_logs SET status = 'FAILED', error_detail = $1, updated_at = NOW() WHERE id = $2`,
+                [err.message || 'send failed', row.id]
+            ).catch(() => {});
+            await whatsappService._incrementDailyCounter('failed');
+            console.warn(`[WA Worker] Auto-reply failed for ${row.phone}: ${err.message}`);
+        }
+
+        // Schedule next auto-reply slot: break-if-needed, otherwise delay
+        if (this.autoReplyMsgsSinceBreak >= this.autoReplyNextBreakAt) {
+            const breakMs = this._randInt(CONFIG.autoReply.breakDuration.min, CONFIG.autoReply.breakDuration.max);
+            this.autoReplyBreakUntil = Date.now() + breakMs;
+            this.autoReplyMsgsSinceBreak = 0;
+            this.autoReplyNextBreakAt = this._randInt(CONFIG.autoReply.breakEveryMin, CONFIG.autoReply.breakEveryMax);
+            console.log(`[WA Worker] ☕ Auto-reply BREAK for ${Math.round(breakMs / 60_000)} min`);
+        } else {
+            const delay = this._randInt(CONFIG.autoReply.delay.min, CONFIG.autoReply.delay.max);
+            this.nextAutoReplyAllowedAt = Date.now() + delay;
         }
     }
 
@@ -373,6 +489,15 @@ class WAWorker {
             if (rowCount > 0) {
                 console.log(`[WA Worker] Recovered ${rowCount} stale broadcast recipient(s)`);
             }
+
+            // Stale auto-reply rows (worker crashed mid-send) → put back in queue
+            const { rowCount: arCount } = await db.query(
+                `UPDATE whatsapp_logs SET status = 'QUEUED', updated_at = NOW()
+                 WHERE status = 'SENDING' AND priority = 'auto_reply' AND sent_at IS NULL`
+            );
+            if (arCount > 0) {
+                console.log(`[WA Worker] Recovered ${arCount} stale auto-reply log(s)`);
+            }
         } catch (err) {
             console.error('[WA Worker] Recovery error:', err.message);
         }
@@ -386,6 +511,7 @@ class WAWorker {
             const { rows: [counts] } = await db.query(
                 `SELECT
                     COUNT(*) FILTER (WHERE status = 'PENDING') as pending,
+                    COUNT(*) FILTER (WHERE status = 'QUEUED' AND priority = 'auto_reply') as auto_reply_queued,
                     COUNT(*) FILTER (WHERE status = 'FAILED' AND retry_count < max_retries) as retryable,
                     COUNT(*) FILTER (WHERE status = 'FAILED' AND retry_count >= max_retries) as permanent_fail,
                     COUNT(*) FILTER (WHERE status = 'SENT') as sent,
@@ -398,6 +524,9 @@ class WAWorker {
             const inBreak = now < this.breakUntil;
             const nextSendIn = Math.max(0, this.nextBroadcastAllowedAt - now);
             const breakRemaining = Math.max(0, this.breakUntil - now);
+            const autoReplyInBreak = now < this.autoReplyBreakUntil;
+            const autoReplyNextSendIn = Math.max(0, this.nextAutoReplyAllowedAt - now);
+            const autoReplyBreakRemaining = Math.max(0, this.autoReplyBreakUntil - now);
 
             return {
                 running: this.isRunning,
@@ -408,7 +537,14 @@ class WAWorker {
                     breakRemainingSec: Math.round(breakRemaining / 1000),
                     msgsSinceLastBreak: this.msgsSinceLastBreak,
                     nextBreakAt: this.nextBreakAt,
-                    nextSendInSec: Math.round(nextSendIn / 1000)
+                    nextSendInSec: Math.round(nextSendIn / 1000),
+                    autoReply: {
+                        inBreak: autoReplyInBreak,
+                        breakRemainingSec: Math.round(autoReplyBreakRemaining / 1000),
+                        msgsSinceLastBreak: this.autoReplyMsgsSinceBreak,
+                        nextBreakAt: this.autoReplyNextBreakAt,
+                        nextSendInSec: Math.round(autoReplyNextSendIn / 1000)
+                    }
                 }
             };
         } catch (err) {

@@ -169,10 +169,13 @@ exports.submitForm = async (req, res) => {
                     return;
                 }
 
-                const waResult = await whatsappService.sendAutoReply({ nama_lengkap: finalName, whatsapp: cleanPhone });
-                const waSent = waResult && waResult.success;
+                // Queue auto-reply (worker delivers with 60-120s pacing + working hours guard).
+                // Form responds to customer immediately; WA send happens minutes later.
+                const waResult = await whatsappService.enqueueAutoReply({ nama_lengkap: finalName, whatsapp: cleanPhone });
+                const queued = waResult && waResult.success;
+                // wa_sent stays false until worker actually sends. Status moves to Contacted on send.
                 await db.query('UPDATE customers SET wa_sent = $1, status = $2 WHERE id = $3',
-                    [waSent, waSent ? 'Completed' : 'New', customerId]);
+                    [false, queued ? 'New' : 'New', customerId]);
             } catch (waError) {
                 console.warn('⚠️ WhatsApp auto-reply failed:', waError.message || waError);
                 await db.query('UPDATE customers SET wa_sent = FALSE, status = $1 WHERE id = $2', ['New', customerId]).catch(() => {});

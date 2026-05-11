@@ -140,12 +140,12 @@ if (process.env.VERCEL) {
             console.error('[WA] Failed to initialize WhatsApp service:', err.message);
         }
 
-        // Birthday greeting cron — setiap hari jam 8 pagi WITA
+        // Birthday greeting cron — setiap hari jam 9 pagi WITA (1 jam margin after 08:00 working hours open)
         const birthdayController = require('./controllers/birthdayController');
-        cron.schedule('0 8 * * *', () => {
+        cron.schedule('0 9 * * *', () => {
             console.log('[Cron] Running birthday check...');
             birthdayController.cronCheckBirthdays();
         }, { timezone: 'Asia/Makassar' });
-        console.log('[Cron] Birthday greeting scheduled: every day at 08:00 WITA');
+        console.log('[Cron] Birthday greeting scheduled: every day at 09:00 WITA');
     });
 }
