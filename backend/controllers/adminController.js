@@ -367,6 +367,7 @@ exports.getCustomers = async (req, res) => {
             `SELECT c.id, c.nama_lengkap, c.nama_sales, c.merk_unit, c.tipe_unit,
                 c.harga, c.qty, c.whatsapp, c.metode_pembayaran,
                 c.source, c.status, c.tipe, c.created_at, c.catatan, c.wa_sent,
+                c.last_incoming_message_at,
                 COALESCE(p.purchase_count, 0)::int as purchase_count,
                 p.last_purchase_at
             FROM customers c
@@ -374,7 +375,7 @@ exports.getCustomers = async (req, res) => {
                 SELECT customer_id, COUNT(*) as purchase_count, MAX(created_at) as last_purchase_at
                 FROM purchases GROUP BY customer_id
             ) p ON p.customer_id = c.id
-            ORDER BY COALESCE(p.last_purchase_at, c.created_at) DESC`
+            ORDER BY COALESCE(p.last_purchase_at, c.last_incoming_message_at, c.created_at) DESC`
         );
 
         res.json({

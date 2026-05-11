@@ -505,6 +505,17 @@ function formatWaktu(date) {
     return new Date(date).toLocaleString('id-ID', { timeZone: TIMEZONE });
 }
 
+// Helper: get the relevant activity date for a customer.
+// - Belanja: latest purchase date
+// - Chat Only: latest incoming message date
+// - Fallback to created_at when neither available
+function customerActivityDate(c) {
+    if ((c.tipe || 'Belanja') === 'Chat Only') {
+        return c.last_incoming_message_at || c.created_at;
+    }
+    return c.last_purchase_at || c.created_at;
+}
+
 // Global state
 let token = localStorage.getItem('token');
 let admin = JSON.parse(localStorage.getItem('admin') || '{}');
@@ -794,7 +805,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (customers && customers.success) {
                 const today = toWITADate(new Date());
                 dashTodayCustomers = customers.data.filter(c => {
-                    const refDate = c.last_purchase_at || c.created_at;
+                    const refDate = customerActivityDate(c);
                     return refDate && toWITADate(refDate) === today;
                 });
                 console.log(`✅ Loaded ${dashTodayCustomers.length} customers today`);
@@ -851,7 +862,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             </tr></thead><tbody>`;
 
         customers.forEach(customer => {
-            const time = new Date(customer.created_at).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'});
+            const time = new Date(customerActivityDate(customer)).toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit', timeZone: TIMEZONE});
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
@@ -1004,7 +1015,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             </tr></thead><tbody>`;
 
         pageData.forEach((customer, index) => {
-            const date = formatTanggal(customer.last_purchase_at || customer.created_at);
+            const date = formatTanggal(customerActivityDate(customer));
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
@@ -1111,12 +1122,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 return m.includes(target) || t.includes(target);
             });
         }
-        const refDate = c => c.last_purchase_at || c.created_at;
-        if (dateFrom) filtered = filtered.filter(c => new Date(refDate(c)) >= new Date(dateFrom));
+        if (dateFrom) filtered = filtered.filter(c => new Date(customerActivityDate(c)) >= new Date(dateFrom));
         if (dateTo) {
             const to = new Date(dateTo);
             to.setDate(to.getDate() + 1);
-            filtered = filtered.filter(c => new Date(refDate(c)) < to);
+            filtered = filtered.filter(c => new Date(customerActivityDate(c)) < to);
         }
 
         // Sorting — harga takes precedence if set, else waktu
@@ -1125,9 +1135,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         } else if (sortHarga === 'expensive') {
             filtered.sort((a, b) => (Number(b.harga) || 0) - (Number(a.harga) || 0));
         } else if (sortWaktu === 'newest') {
-            filtered.sort((a, b) => new Date(refDate(b)) - new Date(refDate(a)));
+            filtered.sort((a, b) => new Date(customerActivityDate(b)) - new Date(customerActivityDate(a)));
         } else if (sortWaktu === 'oldest') {
-            filtered.sort((a, b) => new Date(refDate(a)) - new Date(refDate(b)));
+            filtered.sort((a, b) => new Date(customerActivityDate(a)) - new Date(customerActivityDate(b)));
         }
 
         currentPage = 1;
