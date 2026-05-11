@@ -913,7 +913,15 @@ exports.forgotPassword = async (req, res) => {
                 host: process.env.MAIL_HOST,
                 port: Number(process.env.MAIL_PORT) || 587,
                 secure: (process.env.MAIL_SECURE === 'true'),
-                auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS }
+                auth: { user: process.env.MAIL_USER, pass: process.env.MAIL_PASS },
+                // Force IPv4. Railway's outbound network doesn't route IPv6, but Node
+                // happily picks an AAAA record from DNS and then fails with
+                // ENETUNREACH 2607:f8b0:...:587. family=4 makes the resolver only
+                // hand back A records, so we always connect over IPv4.
+                family: 4,
+                connectionTimeout: 15_000,
+                greetingTimeout: 10_000,
+                socketTimeout: 20_000
             });
 
             const from = process.env.MAIL_FROM || process.env.MAIL_USER;
