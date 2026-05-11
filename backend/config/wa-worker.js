@@ -18,8 +18,28 @@ const db = require('./database');
 const whatsappService = require('./whatsapp');
 require('dotenv').config();
 
-// Message variation — identical copy used by adminController
-// Keeps each broadcast message slightly unique so WA anti-spam doesn't fingerprint
+// Spintax parser — resolves {opt1|opt2|opt3} to one random option.
+// Handles nested spintax by iterating from innermost {} outward.
+// REQUIRES at least one `|` inside the braces — single-token braces like {nama}
+// and {umur} are placeholders, left untouched so the consumer can replace them.
+// Example: "Halo {Kak|Bro}, {terima kasih|makasih}, Kak {nama}!" → "Halo Bro, makasih, Kak {nama}!"
+function spinText(text) {
+    if (typeof text !== 'string') return text;
+    const inner = /\{([^{}]*\|[^{}]*)\}/;
+    let out = text;
+    let safety = 0;
+    while (inner.test(out) && safety < 50) {
+        out = out.replace(inner, (_, opts) => {
+            const choices = opts.split('|');
+            return choices[Math.floor(Math.random() * choices.length)];
+        });
+        safety++;
+    }
+    return out;
+}
+
+// Message variation — applied to broadcast (and optionally other categories).
+// Layered defense against WA's fingerprinting of identical messages.
 const RANDOM_GREETINGS = [
     '', '',
     'Halo Kak, ', 'Hi Kak, ', 'Hai Kak, ', 'Halo, ', 'Hai, ',
@@ -33,15 +53,20 @@ const RANDOM_CLOSINGS = [
 ];
 
 function variasiPesan(message, customerName) {
-    let msg = String(message).replace(/\{nama\}/gi, customerName || 'Kak');
+    // 1. Resolve spintax first (admin can write {pagi|siang|sore} in templates)
+    let msg = spinText(String(message));
+    // 2. Replace {nama} placeholder (after spintax so opts can include {nama})
+    msg = msg.replace(/\{nama\}/gi, customerName || 'Kak');
+    // 3. Random greeting prefix if message doesn't already greet
     const startsWithGreeting = /^(halo|hai|hi|hey|selamat|assalam|permisi)/i.test(msg);
     if (!startsWithGreeting) {
         const g = RANDOM_GREETINGS[Math.floor(Math.random() * RANDOM_GREETINGS.length)];
         if (g) msg = g + msg;
     }
+    // 4. Random closing suffix
     const c = RANDOM_CLOSINGS[Math.floor(Math.random() * RANDOM_CLOSINGS.length)];
     msg = msg + c;
-    // 1-2 zero-width spaces at random positions
+    // 5. 1-2 zero-width spaces at random positions (defeats exact-string fingerprinting)
     const zwsp = '​';
     const numZwsp = Math.floor(Math.random() * 2) + 1;
     for (let i = 0; i < numZwsp; i++) {
@@ -50,6 +75,8 @@ function variasiPesan(message, customerName) {
     }
     return msg;
 }
+
+// spinText is exported at the bottom alongside the WAWorker singleton instance.
 
 // ============================================
 // ANTI-BAN CONFIG
@@ -61,32 +88,36 @@ const CONFIG = {
     workStartHour: 8,     // 08:00 start
     workEndHour: 22,      // stop at 22:00 (do not send after)
 
-    // Broadcast delays (milliseconds) — ~3 minutes per message
+    // Per-category default ranges. The ACTUAL values for a given day are sampled
+    // once from these ranges into todaysProfile (see _ensureDailyProfile), so two
+    // consecutive days never produce the same anti-ban tempo.
+    //
+    // Both auto-reply and broadcast target ~5 min/message per the user spec.
+    // Birthday stays slightly faster (~3 min) because there are at most a handful
+    // of birthdays per day and the cron starts at 09:00 — needs a tighter loop
+    // to fit safely inside working hours.
     broadcast: {
-        warmupDelay:  { min: 200_000, max: 240_000 },  // first 20 of day (slightly slower)
-        normalDelay:  { min: 165_000, max: 195_000 },  // ~3 min ± 15s after warm-up
-        warmupThreshold: 20,                            // first 20 msgs = warm-up
-
-        // Break: every 25-30 messages, pause 15-30 min
-        breakEveryMin: 25,
-        breakEveryMax: 30,
-        breakDuration: { min: 15 * 60_000, max: 30 * 60_000 }
+        warmupBaseMs: { min: 270_000, max: 360_000 },      // ~4:30 to 6:00 base for the day
+        warmupJitterMs: 30_000,                             // ±30s per message
+        normalBaseMs:  { min: 270_000, max: 360_000 },      // same range; broadcast == auto-reply
+        normalJitterMs: 30_000,
+        warmupThreshold: 20,
+        breakEveryRange:  { min: 22, max: 32 },             // sampled to a single int per day
+        breakDurationMs:  { min: 12 * 60_000, max: 28 * 60_000 }
     },
 
-    // Auto-reply queue — ~5 minutes per message (very conservative)
     autoReply: {
-        delay: { min: 270_000, max: 330_000 },              // 4:30–5:30 (~5 min)
-        breakEveryMin: 20,                                   // break every 20-25 msgs
-        breakEveryMax: 25,
-        breakDuration: { min: 15 * 60_000, max: 25 * 60_000 } // 15-25 min break
+        baseDelayMs: { min: 270_000, max: 360_000 },        // 4:30 to 6:00 base for the day
+        jitterMs: 30_000,                                    // ±30s per message
+        breakEveryRange:  { min: 18, max: 28 },
+        breakDurationMs:  { min: 10 * 60_000, max: 25 * 60_000 }
     },
 
-    // Birthday delays — ~3 minutes per message
     birthday: {
-        delay: { min: 165_000, max: 195_000 },             // ~3 min ± 15s per message
-        breakEveryMin: 18,                                  // break every 18-22 msgs
-        breakEveryMax: 22,
-        breakDuration: { min: 10 * 60_000, max: 15 * 60_000 } // 10-15 min break
+        baseDelayMs: { min: 150_000, max: 210_000 },        // 2:30 to 3:30
+        jitterMs: 20_000,
+        breakEveryRange:  { min: 15, max: 24 },
+        breakDurationMs:  { min: 8 * 60_000, max: 18 * 60_000 }
     },
 
     // Retry delays
@@ -118,9 +149,67 @@ class WAWorker {
 
         // Auto-reply queue state (separate pacing from broadcast)
         this.autoReplyMsgsSinceBreak = 0;
-        this.autoReplyNextBreakAt = this._randInt(CONFIG.autoReply.breakEveryMin, CONFIG.autoReply.breakEveryMax);
         this.autoReplyBreakUntil = 0;
         this.nextAutoReplyAllowedAt = 0;
+
+        // Daily anti-ban profile — re-rolled every day in WITA time. All delay/break
+        // ranges are SAMPLED ONCE PER DAY from the ranges above, so today's tempo
+        // never matches yesterday's. A spider that learns "every 5 min, break at 25"
+        // sees a moving target instead.
+        this.todaysProfile = null;
+        this.todaysProfileDate = null;
+        this.autoReplyNextBreakAt = 25;  // will be replaced on first _ensureDailyProfile
+    }
+
+    _todayKeyWITA() {
+        // WITA = UTC+8; format as YYYY-MM-DD
+        const utc = Date.now();
+        const wita = new Date(utc + 8 * 60 * 60 * 1000);
+        return wita.toISOString().slice(0, 10);
+    }
+
+    _ensureDailyProfile() {
+        const today = this._todayKeyWITA();
+        if (this.todaysProfileDate === today && this.todaysProfile) return this.todaysProfile;
+
+        const bcCfg = CONFIG.broadcast;
+        const arCfg = CONFIG.autoReply;
+        const bdCfg = CONFIG.birthday;
+        this.todaysProfile = {
+            broadcast: {
+                warmupBase: this._randInt(bcCfg.warmupBaseMs.min, bcCfg.warmupBaseMs.max),
+                normalBase: this._randInt(bcCfg.normalBaseMs.min, bcCfg.normalBaseMs.max),
+                breakEvery: this._randInt(bcCfg.breakEveryRange.min, bcCfg.breakEveryRange.max),
+                breakDuration: { min: bcCfg.breakDurationMs.min, max: bcCfg.breakDurationMs.max }
+            },
+            autoReply: {
+                base: this._randInt(arCfg.baseDelayMs.min, arCfg.baseDelayMs.max),
+                breakEvery: this._randInt(arCfg.breakEveryRange.min, arCfg.breakEveryRange.max),
+                breakDuration: { min: arCfg.breakDurationMs.min, max: arCfg.breakDurationMs.max }
+            },
+            birthday: {
+                base: this._randInt(bdCfg.baseDelayMs.min, bdCfg.baseDelayMs.max),
+                breakEvery: this._randInt(bdCfg.breakEveryRange.min, bdCfg.breakEveryRange.max),
+                breakDuration: { min: bdCfg.breakDurationMs.min, max: bdCfg.breakDurationMs.max }
+            }
+        };
+        this.todaysProfileDate = today;
+        // Re-sync the running counters to today's break threshold
+        this.nextBreakAt = this.todaysProfile.broadcast.breakEvery;
+        this.autoReplyNextBreakAt = this.todaysProfile.autoReply.breakEvery;
+
+        const sec = (ms) => Math.round(ms / 1000);
+        console.log(`[AntiBan] Daily profile for ${today}:`
+            + ` broadcast base=${sec(this.todaysProfile.broadcast.normalBase)}s break@${this.todaysProfile.broadcast.breakEvery};`
+            + ` autoReply base=${sec(this.todaysProfile.autoReply.base)}s break@${this.todaysProfile.autoReply.breakEvery};`
+            + ` birthday base=${sec(this.todaysProfile.birthday.base)}s break@${this.todaysProfile.birthday.breakEvery}`);
+        return this.todaysProfile;
+    }
+
+    // Read-only accessor for birthday controller (so the inline cron loop uses the same
+    // daily profile this worker is using for everything else).
+    getBirthdayProfile() {
+        return this._ensureDailyProfile().birthday;
     }
 
     async start() {
@@ -170,9 +259,18 @@ class WAWorker {
         if (now < this.autoReplyBreakUntil) return;       // in a break
         if (!this._isWorkingHours()) return;              // outside 08-22 WITA
         if (now < this.nextAutoReplyAllowedAt) return;    // still cooling down
-        if (now < this.nextBroadcastAllowedAt && this.lastBroadcastSentAt > 0) {
-            // If broadcast just sent, give it room — don't stack identical-looking sends
-            // back to back with broadcasts.
+
+        // Bridge readiness check — don't claim a row if bridge can't deliver. The
+        // status() call is cheap (cached in memory by wa-bridge). Without this, every
+        // tick during a bridge outage would mark one auto-reply as transient-failed
+        // (re-queued) and back off 60s — fine, but wasteful.
+        try {
+            const status = await whatsappService.getStatus();
+            if (!status || status.status !== 'connected') {
+                return;  // bridge not ready; try next tick
+            }
+        } catch (_) {
+            return;  // bridge unreachable; try next tick
         }
 
         // Claim one queued auto-reply atomically
@@ -230,23 +328,45 @@ class WAWorker {
             this.autoReplyMsgsSinceBreak += 1;
             console.log(`[WA Worker] ✉️ Auto-reply sent to ${row.phone} (${this.autoReplyMsgsSinceBreak}/${this.autoReplyNextBreakAt} until break)`);
         } catch (err) {
-            await db.query(
-                `UPDATE whatsapp_logs SET status = 'FAILED', error_detail = $1, updated_at = NOW() WHERE id = $2`,
-                [err.message || 'send failed', row.id]
-            ).catch(() => {});
-            await whatsappService._incrementDailyCounter('failed');
-            console.warn(`[WA Worker] Auto-reply failed for ${row.phone}: ${err.message}`);
+            // Distinguish "bridge is temporarily unreachable" (requeue) vs "real send
+            // failed" (give up). For 503/timeout/connection refused, the message hasn't
+            // been delivered to WA at all — putting it back in the queue keeps the
+            // customer's auto-reply alive across Railway restarts and Baileys reconnects.
+            const transient = /503|timeout|ECONN|ETIMEDOUT|ENOTFOUND|bridge|not connected/i.test(err.message || '');
+            if (transient) {
+                await db.query(
+                    `UPDATE whatsapp_logs SET status = 'QUEUED', error_detail = $1, updated_at = NOW() WHERE id = $2`,
+                    [`requeued: ${err.message}`.slice(0, 250), row.id]
+                ).catch(() => {});
+                // Back off auto-reply processing for a minute so we don't hot-loop
+                this.nextAutoReplyAllowedAt = Date.now() + 60_000;
+                console.warn(`[WA Worker] Auto-reply transient fail for ${row.phone} — requeued (${err.message})`);
+            } else {
+                await db.query(
+                    `UPDATE whatsapp_logs SET status = 'FAILED', error_detail = $1, updated_at = NOW() WHERE id = $2`,
+                    [err.message || 'send failed', row.id]
+                ).catch(() => {});
+                await whatsappService._incrementDailyCounter('failed');
+                console.warn(`[WA Worker] Auto-reply permanent fail for ${row.phone}: ${err.message}`);
+            }
+            return;  // skip the post-send delay scheduler below
         }
 
-        // Schedule next auto-reply slot: break-if-needed, otherwise delay
+        // Schedule next auto-reply slot using today's profile (base ± jitter).
+        const profile = this._ensureDailyProfile().autoReply;
         if (this.autoReplyMsgsSinceBreak >= this.autoReplyNextBreakAt) {
-            const breakMs = this._randInt(CONFIG.autoReply.breakDuration.min, CONFIG.autoReply.breakDuration.max);
+            const breakMs = this._randInt(profile.breakDuration.min, profile.breakDuration.max);
             this.autoReplyBreakUntil = Date.now() + breakMs;
             this.autoReplyMsgsSinceBreak = 0;
-            this.autoReplyNextBreakAt = this._randInt(CONFIG.autoReply.breakEveryMin, CONFIG.autoReply.breakEveryMax);
+            // Re-roll break threshold within day's range so two breaks in same day aren't identical
+            this.autoReplyNextBreakAt = this._randInt(
+                CONFIG.autoReply.breakEveryRange.min,
+                CONFIG.autoReply.breakEveryRange.max
+            );
             console.log(`[WA Worker] ☕ Auto-reply BREAK for ${Math.round(breakMs / 60_000)} min`);
         } else {
-            const delay = this._randInt(CONFIG.autoReply.delay.min, CONFIG.autoReply.delay.max);
+            const jitter = this._randInt(-CONFIG.autoReply.jitterMs, CONFIG.autoReply.jitterMs);
+            const delay = Math.max(60_000, profile.base + jitter);  // floor at 1 min
             this.nextAutoReplyAllowedAt = Date.now() + delay;
         }
     }
@@ -413,21 +533,28 @@ class WAWorker {
 
     _scheduleNextBroadcast(totalSentToday) {
         const now = Date.now();
+        const profile = this._ensureDailyProfile().broadcast;
 
-        // Break check — every 25-30 msgs, pause 15-30 min
+        // Break check — uses today's break threshold sampled from breakEveryRange
         if (this.msgsSinceLastBreak >= this.nextBreakAt) {
-            const breakMs = this._randInt(CONFIG.broadcast.breakDuration.min, CONFIG.broadcast.breakDuration.max);
+            const breakMs = this._randInt(profile.breakDuration.min, profile.breakDuration.max);
             this.breakUntil = now + breakMs;
             this.msgsSinceLastBreak = 0;
-            this.nextBreakAt = this._randomBreakThreshold();
+            // Re-roll break threshold WITHIN today's range so two breaks aren't identical
+            this.nextBreakAt = this._randInt(
+                CONFIG.broadcast.breakEveryRange.min,
+                CONFIG.broadcast.breakEveryRange.max
+            );
             console.log(`[WA Worker] ☕ BREAK for ${Math.round(breakMs / 60_000)} min after ${totalSentToday} messages today`);
             return;
         }
 
-        // Warm-up delay (first N of day) vs normal delay
+        // Warm-up (first N of day) uses warmupBase, then normalBase. Both ± jitter.
         const inWarmup = totalSentToday <= CONFIG.broadcast.warmupThreshold;
-        const delayCfg = inWarmup ? CONFIG.broadcast.warmupDelay : CONFIG.broadcast.normalDelay;
-        const delay = this._randInt(delayCfg.min, delayCfg.max);
+        const base = inWarmup ? profile.warmupBase : profile.normalBase;
+        const jitterCfg = inWarmup ? CONFIG.broadcast.warmupJitterMs : CONFIG.broadcast.normalJitterMs;
+        const jitter = this._randInt(-jitterCfg, jitterCfg);
+        const delay = Math.max(60_000, base + jitter);
         this.nextBroadcastAllowedAt = now + delay;
 
         console.log(`[WA Worker] ✅ Sent (${totalSentToday}/day, ${this.msgsSinceLastBreak}/${this.nextBreakAt} until break). Next in ${Math.round(delay / 1000)}s (${inWarmup ? 'warmup' : 'normal'})`);
@@ -585,7 +712,7 @@ class WAWorker {
     }
 
     _randomBreakThreshold() {
-        return this._randInt(CONFIG.broadcast.breakEveryMin, CONFIG.broadcast.breakEveryMax);
+        return this._randInt(CONFIG.broadcast.breakEveryRange.min, CONFIG.broadcast.breakEveryRange.max);
     }
 
     _randomDelay(min, max) {
@@ -593,4 +720,6 @@ class WAWorker {
     }
 }
 
-module.exports = new WAWorker();
+const workerInstance = new WAWorker();
+module.exports = workerInstance;
+module.exports.spinText = spinText;

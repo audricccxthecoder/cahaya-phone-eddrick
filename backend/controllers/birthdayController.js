@@ -8,14 +8,9 @@ const whatsappService = require('../config/whatsapp');
 
 const DEFAULT_MESSAGE = `Halo Kak {nama}! 🎂🎉\n\nSelamat Ulang Tahun dari kami *CAHAYA PHONE* Gorontalo!\n\nSemoga panjang umur, sehat selalu, dan diberkahi rezeki yang melimpah. Terima kasih sudah menjadi pelanggan setia kami.\n\nSalam hangat,\nCahaya Phone 🙏`;
 
-// Anti-ban pacing for birthday sends
-const BIRTHDAY_DELAY_MIN_MS = 165_000;   // ~3 min ± 15s per message
-const BIRTHDAY_DELAY_MAX_MS = 195_000;
-const BIRTHDAY_BREAK_EVERY = 20;          // break after every 20 messages
-const BIRTHDAY_BREAK_MIN_MS = 10 * 60_000; // 10 min
-const BIRTHDAY_BREAK_MAX_MS = 15 * 60_000; // 15 min
-const WORK_START_HOUR = 8;                // WITA
-const WORK_END_HOUR = 22;                 // WITA
+// Working hours (WITA)
+const WORK_START_HOUR = 8;
+const WORK_END_HOUR = 22;
 
 function isWorkingHoursWITA() {
     const nowUtc = new Date();
@@ -25,6 +20,26 @@ function isWorkingHoursWITA() {
 
 function randInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// Per-send delay drawn from today's birthday profile (rolled once per day by wa-worker).
+// Adds ±15s jitter on top so consecutive sends within the same day aren't identical either.
+function nextBirthdayDelayMs() {
+    const waWorker = require('../config/wa-worker');
+    const profile = waWorker.getBirthdayProfile();
+    const jitter = randInt(-15_000, 15_000);
+    return Math.max(60_000, profile.base + jitter);
+}
+
+function nextBirthdayBreakMs() {
+    const waWorker = require('../config/wa-worker');
+    const profile = waWorker.getBirthdayProfile();
+    return randInt(profile.breakDuration.min, profile.breakDuration.max);
+}
+
+function birthdayBreakEvery() {
+    const waWorker = require('../config/wa-worker');
+    return waWorker.getBirthdayProfile().breakEvery;
 }
 
 // Calculate age in years from tanggal_lahir.
@@ -134,13 +149,14 @@ exports.sendAllGreetings = async (req, res) => {
         // Respond immediately so admin tab doesn't hang for hours on 50+ customers
         res.json({
             success: true,
-            message: `Memproses ${pending.length} ucapan di background dengan delay ~3 menit/pesan + break 10–15 menit tiap ${BIRTHDAY_BREAK_EVERY} pesan. Pantau di Riwayat.`,
+            message: `Memproses ${pending.length} ucapan di background. Delay & break diacak harian. Pantau di Riwayat.`,
             queued: pending.length
         });
 
         // Background loop — runs until done or working hours close
         (async () => {
             let sent = 0, failed = 0, skipped = 0, sinceBreak = 0;
+            const breakEvery = birthdayBreakEvery();
             for (const customer of pending) {
                 if (!isWorkingHoursWITA()) {
                     console.log(`[Birthday] ⏸ Stopped at ${sent} sent — outside working hours`);
@@ -156,17 +172,14 @@ exports.sendAllGreetings = async (req, res) => {
                     failed++;
                 }
 
-                // Break every N messages
-                if (sinceBreak >= BIRTHDAY_BREAK_EVERY) {
-                    const breakMs = randInt(BIRTHDAY_BREAK_MIN_MS, BIRTHDAY_BREAK_MAX_MS);
+                if (sinceBreak >= breakEvery) {
+                    const breakMs = nextBirthdayBreakMs();
                     console.log(`[Birthday] ☕ Break ${Math.round(breakMs / 60_000)} min after ${sent} sent`);
                     await new Promise(r => setTimeout(r, breakMs));
                     sinceBreak = 0;
                     continue;
                 }
-
-                // Inter-message delay (2 min ± 10s)
-                await new Promise(r => setTimeout(r, randInt(BIRTHDAY_DELAY_MIN_MS, BIRTHDAY_DELAY_MAX_MS)));
+                await new Promise(r => setTimeout(r, nextBirthdayDelayMs()));
             }
             console.log(`[Birthday] Manual run done: ${sent} sent, ${failed} failed, ${skipped} skipped`);
         })().catch(err => console.error('[Birthday] Manual run crashed:', err.message));
@@ -270,7 +283,11 @@ async function sendBirthdayMessage(customerId) {
         );
         let message = msgResult.rows.length > 0 ? msgResult.rows[0].value : DEFAULT_MESSAGE;
 
-        // Replace placeholders: {nama} = customer name, {umur} = age in years
+        // Pipeline: spintax → {nama}/{umur} replace. Order matters — spintax is
+        // resolved first so that admin can write {Halo|Hai} Kak {nama}, dengan
+        // {nama} placeholder safely inside or outside spintax groups.
+        const { spinText } = require('../config/wa-worker');
+        message = spinText(message);
         message = message.replace(/\{nama\}/g, customer.nama_lengkap);
         const umur = calculateAge(customer.tanggal_lahir);
         message = message.replace(/\{umur\}/g, umur !== null ? String(umur) : '');
@@ -355,6 +372,7 @@ exports.cronCheckBirthdays = async function() {
         console.log(`[Birthday] Found ${pending.length} birthday(s) today!`);
 
         let sent = 0, failed = 0, sinceBreak = 0;
+        const breakEvery = birthdayBreakEvery();
         for (const customer of pending) {
             if (!isWorkingHoursWITA()) {
                 console.log(`[Birthday] ⏸ Cron stopped at ${sent} sent — outside working hours ${WORK_START_HOUR}-${WORK_END_HOUR} WITA`);
@@ -369,17 +387,14 @@ exports.cronCheckBirthdays = async function() {
                 failed++;
             }
 
-            // Break every N messages
-            if (sinceBreak >= BIRTHDAY_BREAK_EVERY) {
-                const breakMs = randInt(BIRTHDAY_BREAK_MIN_MS, BIRTHDAY_BREAK_MAX_MS);
+            if (sinceBreak >= breakEvery) {
+                const breakMs = nextBirthdayBreakMs();
                 console.log(`[Birthday] ☕ Cron break ${Math.round(breakMs / 60_000)} min after ${sent} sent`);
                 await new Promise(r => setTimeout(r, breakMs));
                 sinceBreak = 0;
                 continue;
             }
-
-            // Inter-message delay (2 min ± 10s)
-            await new Promise(r => setTimeout(r, randInt(BIRTHDAY_DELAY_MIN_MS, BIRTHDAY_DELAY_MAX_MS)));
+            await new Promise(r => setTimeout(r, nextBirthdayDelayMs()));
         }
 
         console.log(`[Birthday] ✅ Cron check completed: ${sent} sent, ${failed} failed`);

@@ -62,8 +62,16 @@ app.use(helmet({
         useDefaults: true,
         directives: {
             'default-src': ["'self'"],
-            'script-src': ["'self'", "'unsafe-inline'"], // admin frontend uses inline onclick
+            // Helmet's CSP defaults set script-src-attr to 'none' which blocks ALL
+            // inline event handlers (onclick="...", onchange="...", etc). The admin
+            // dashboard uses inline handlers heavily, so we explicitly allow them.
+            // This is a tradeoff: refactoring every onclick to addEventListener would
+            // give us a stricter CSP, but the XSS attack surface is already closed
+            // server-side (esc() on every untrusted field).
+            'script-src': ["'self'", "'unsafe-inline'"],
+            'script-src-attr': ["'unsafe-inline'"],
             'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+            'style-src-attr': ["'unsafe-inline'"],
             'font-src': ["'self'", 'https://fonts.gstatic.com'],
             'img-src': ["'self'", 'data:', 'https:'],
             'connect-src': ["'self'", 'https:'],
@@ -202,9 +210,26 @@ if (process.env.VERCEL) {
         // Birthday greeting cron — setiap hari jam 9 pagi WITA (1 jam margin after 08:00 working hours open)
         const birthdayController = require('./controllers/birthdayController');
         cron.schedule('0 9 * * *', () => {
-            console.log('[Cron] Running birthday check...');
+            console.log('[Cron] Running birthday check (scheduled)...');
             birthdayController.cronCheckBirthdays();
         }, { timezone: 'Asia/Makassar' });
         console.log('[Cron] Birthday greeting scheduled: every day at 09:00 WITA');
+
+        // Boot-time recovery: if Railway restarted mid-batch today, finish whatever
+        // birthdays haven't been greeted yet. cronCheckBirthdays already filters to
+        // "pending or failed for THIS year" so re-running is idempotent and won't
+        // duplicate-send.
+        setTimeout(() => {
+            birthdayController.cronCheckBirthdays().catch(err =>
+                console.warn('[Boot] Birthday recovery error:', err.message)
+            );
+        }, 60_000);   // wait 1 min after boot so wa-bridge has time to connect
+
+        // Safety net: re-check birthdays every 2 hours during working hours, in case
+        // some sends failed (number not registered, bridge hiccup) and need a retry.
+        cron.schedule('0 11,13,15,17,19 * * *', () => {
+            console.log('[Cron] Running birthday safety-net retry...');
+            birthdayController.cronCheckBirthdays();
+        }, { timezone: 'Asia/Makassar' });
     });
 }

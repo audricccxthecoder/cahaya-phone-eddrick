@@ -134,8 +134,13 @@ class WhatsAppService {
             return { success: false, error: 'Customer telah opt-out', opted_out: true };
         }
 
+        // Pipeline: spintax → {nama} replace → done.
+        // Template can contain {Hi|Halo|Hai} {Kak|Bro}, etc — each enqueue resolves to a
+        // different concrete string, defeating WA's exact-match anti-spam fingerprinting.
+        const { spinText } = require('./wa-worker');
         const tmpl = await this._getAutoReplyTemplate();
-        const message = tmpl.replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
+        let message = spinText(tmpl);
+        message = message.replace(/\{nama\}/g, customer.nama_lengkap || 'Kak');
 
         try {
             const { rows } = await db.query(
