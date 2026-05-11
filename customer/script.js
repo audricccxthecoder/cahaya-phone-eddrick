@@ -71,7 +71,9 @@ form.addEventListener('submit', async (e) => {
         whatsapp: document.getElementById('whatsapp').value.trim(),
         metode_pembayaran: document.getElementById('metode_pembayaran').value,
         tahu_dari: document.getElementById('tahu_dari').value,
-        opted_in: true
+        opted_in: true,
+        // Honeypot — must be empty. Bots filling every input will trip this.
+        website_url: document.getElementById('website_url')?.value || ''
     };
     
     // Validate

@@ -1,8 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
 const path = require('path');
 require('dotenv').config();
+
+const { csrfProtection } = require('./config/csrfMiddleware');
 
 // ============================================
 // BOOT-TIME SECRET VALIDATION (fix #5)
@@ -77,6 +80,9 @@ app.use(helmet({
 app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: true, limit: '50kb' }));
 
+// Cookie parsing — required for httpOnly auth_token and csrf_token reads.
+app.use(cookieParser());
+
 // CORS — izinkan frontend Vercel mengakses backend Railway
 const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
@@ -134,8 +140,10 @@ app.get('/api/health', async (req, res) => {
     }
 });
 
-// API Routes
-app.use('/api', require('./routes/api'));
+// API Routes — CSRF guard runs before routes so any write hits the check.
+// Exempt endpoints (login, webhook, public form, sync-by-secret) are handled
+// inside csrfProtection().
+app.use('/api', csrfProtection, require('./routes/api'));
 
 // Error handling
 app.use((err, req, res, next) => {

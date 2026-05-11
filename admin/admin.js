@@ -531,19 +531,36 @@ function customerActivityDate(c) {
 }
 
 // Global state
-let token = localStorage.getItem('token');
+// NOTE: JWT auth token is now stored in an httpOnly cookie (set by the server on
+// login) which JS cannot read — XSS-resistant. The CSRF token is in a normal
+// cookie that we mirror back to the server as a header on every write.
 let admin = JSON.parse(localStorage.getItem('admin') || '{}');
 let allCustomers = [];
 let allMessages = [];
+
+// Read CSRF token from cookie. Returns empty string if not present (e.g. logged out).
+function getCsrfToken() {
+    const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+}
 
 // ============================================
 // LOGOUT FUNCTION (Global - dipindah ke sini agar bisa dipanggil dari HTML)
 // ============================================
 
-window.logout = function() {
+window.logout = async function() {
     console.log('🚪 Logging out...');
-    localStorage.removeItem('token');
+    try {
+        await fetch(`${API_URL}/admin/logout`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'X-CSRF-Token': getCsrfToken() }
+        });
+    } catch (_) { /* server unreachable — clear locally anyway */ }
     localStorage.removeItem('admin');
+    // Belt-and-suspenders: clear the readable csrf cookie too (auth_token is httpOnly
+    // so the server-side clearCookie is the source of truth for it).
+    document.cookie = 'csrf_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT';
     window.location.href = 'index.html';
 };
 
@@ -579,17 +596,17 @@ if (loginForm) {
             console.log('📡 Attempting login...');
             const response = await fetch(`${API_URL}/admin/login`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                credentials: 'include',          // accept httpOnly auth_token cookie
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })
             });
 
             const result = await response.json();
-            console.log('📨 Login response:', result);
+            console.log('📨 Login response:', result.success ? '(success)' : result);
 
             if (result.success) {
-                localStorage.setItem('token', result.token);
+                // No more localStorage.setItem('token') — JWT lives in an httpOnly cookie now.
+                // We only keep admin profile info (role for UI gating) in localStorage.
                 localStorage.setItem('admin', JSON.stringify(result.admin));
                 console.log('✅ Login successful, redirecting...');
                 window.location.href = 'dashboard.html';
@@ -614,9 +631,12 @@ if (loginForm) {
 if (window.location.pathname.includes('dashboard') || window.location.pathname.includes('dashboard.html')) {
     console.log('📊 Loading dashboard...');
     
-    // Check authentication
-    if (!token) {
-        console.warn('⚠️ No token found, redirecting to login...');
+    // Check authentication: presence of csrf_token cookie is a quick "have I logged in"
+    // signal. The actual auth is verified server-side via the httpOnly auth_token cookie
+    // on every API call — if that cookie is missing/expired, apiCall() catches the 401
+    // and triggers logout(), so this is just a fast first-paint redirect.
+    if (!getCsrfToken()) {
+        console.warn('⚠️ No CSRF cookie found, redirecting to login...');
         window.location.href = 'index.html';
     }
 
@@ -679,13 +699,22 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
     async function apiCall(endpoint, options = {}) {
         try {
+            const method = (options.method || 'GET').toUpperCase();
+            const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+
+            const headers = {
+                'Content-Type': 'application/json',
+                ...options.headers
+            };
+            // Send CSRF token on writes (double-submit cookie pattern).
+            if (isWrite) {
+                headers['X-CSRF-Token'] = getCsrfToken();
+            }
+
             const response = await fetch(`${API_URL}${endpoint}`, {
                 ...options,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`,
-                    ...options.headers
-                }
+                credentials: 'include',     // send httpOnly auth_token + csrf_token cookies
+                headers
             });
 
             if (response.status === 401) {
@@ -1523,7 +1552,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     window.exportLogsOnly = async function() {
         try {
             const response = await fetch(`${API_URL}/admin/cleanup/export`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
@@ -1544,7 +1573,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         // Export dulu
         try {
             const response = await fetch(`${API_URL}/admin/cleanup/export`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
@@ -1723,7 +1752,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         try {
             const filterParams = getExportParams();
             const res = await fetch(`${API_URL}/admin/customers/export?format=${format}${filterParams}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
 
             if (!res.ok) {
@@ -1762,7 +1791,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         try {
             const filterParams = getExportParams();
             const res = await fetch(`${API_URL}/admin/customers/export/vcf?${filterParams.replace(/^&/, '')}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
 
             if (!res.ok) {
@@ -2673,7 +2702,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     async function checkGoogleStatus() {
         try {
             const resp = await fetch(`${API_URL}/google/status`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
             const data = await resp.json();
             const indicator = document.getElementById('googleIndicator');
@@ -2717,7 +2746,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         try {
             await fetch(`${API_URL}/google/disconnect`, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include'
             });
             checkGoogleStatus();
         } catch (err) {
@@ -2868,14 +2897,19 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const np = document.getElementById('newPassword').value;
             const npc = document.getElementById('newPasswordConfirm').value;
             if (np !== npc) { alert('Konfirmasi password tidak cocok'); return; }
-            if (np.length < 6) { alert('Password baru minimal 6 karakter'); return; }
+            // Mirror server-side complexity rule so we fail fast in the UI
+            if (np.length < 8 || !/[A-Za-z]/.test(np) || !/[0-9]/.test(np)) {
+                alert('Password baru minimal 8 karakter, harus mengandung huruf dan angka');
+                return;
+            }
             const res = await apiCall('/admin/credentials', {
                 method: 'PATCH',
                 body: JSON.stringify({ current_password: cur, new_password: np })
             });
             if (res && res.success) {
                 alert('Password berhasil diubah');
-                if (res.token) localStorage.setItem('admin_token', res.token);
+                // Server already rotated the auth cookie + CSRF token in its response —
+                // no JWT to stash client-side anymore.
                 pwForm.reset();
             } else {
                 alert('Gagal: ' + (res?.message || 'Error'));

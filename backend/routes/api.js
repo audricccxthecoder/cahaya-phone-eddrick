@@ -89,6 +89,9 @@ router.post('/google/disconnect', authMiddleware, googleController.disconnect);
 // Admin login (rate limited)
 router.post('/admin/login', loginLimiter, adminController.login);
 
+// Admin logout — clears auth + csrf cookies. Public so it works even if token expired.
+router.post('/admin/logout', adminController.logout);
+
 // Admin profile update (edit name + email)
 router.patch('/admin/profile', authMiddleware, adminController.updateProfile);
 

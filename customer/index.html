@@ -42,7 +42,15 @@
             <!-- Alert -->
             <div id="alert" class="alert"></div>
 
-            <form id="customerForm">
+            <form id="customerForm" autocomplete="on">
+                <!-- Honeypot: hidden from humans (positioned off-screen), but bots auto-fill all
+                     inputs. If this field has any value at submit time, the backend rejects the
+                     request. Add tabindex="-1" so keyboard users skip it. -->
+                <div aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;">
+                    <label for="website_url">Website URL (jangan diisi)</label>
+                    <input type="text" id="website_url" name="website_url" tabindex="-1" autocomplete="off">
+                </div>
+
                 <!-- Section 1: Informasi Customer -->
                 <div class="form-section fade-in">
                     <div class="section-header">

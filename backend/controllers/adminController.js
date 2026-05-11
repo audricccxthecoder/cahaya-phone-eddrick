@@ -8,6 +8,22 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const whatsappService = require('../config/whatsapp');
 const { sanitizePhone } = require('../utils/phoneUtils');
+const { setAuthCookie, issueCsrfToken, clearAuthCookies, safeEqual } = require('../config/csrfMiddleware');
+
+// Password complexity policy — min 8 chars + at least one letter + one digit.
+// Prevents trivial credentials like "12345678" or "password".
+function validatePasswordStrength(pw) {
+    if (typeof pw !== 'string' || pw.length < 8) {
+        return { valid: false, message: 'Password minimal 8 karakter.' };
+    }
+    if (pw.length > 128) {
+        return { valid: false, message: 'Password terlalu panjang (maks 128 karakter).' };
+    }
+    if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) {
+        return { valid: false, message: 'Password harus berisi minimal 1 huruf dan 1 angka.' };
+    }
+    return { valid: true };
+}
 
 const VALID_STATUSES = ['New', 'Contacted', 'Follow Up', 'Completed', 'Inactive'];
 
@@ -160,12 +176,17 @@ exports.login = async (req, res) => {
             { expiresIn: '4h' }
         );
 
+        // Set httpOnly auth cookie (not reachable from JS — XSS can't steal it)
+        // plus a CSRF token cookie that the frontend echoes back on every write.
+        setAuthCookie(res, token);
+        const csrfToken = issueCsrfToken(res);
+
         console.log('✅ Login successful:', username, '| role:', admin.role);
 
         res.json({
             success: true,
             message: 'Login berhasil',
-            token: token,
+            csrf_token: csrfToken,   // frontend stores in memory + uses on writes
             admin: {
                 id: admin.id,
                 username: admin.username,
@@ -637,6 +658,9 @@ exports.createAdmin = async (req, res) => {
         const { rows: dupE } = await db.query('SELECT id FROM admins WHERE LOWER(email) = $1', [cleanEmail]);
         if (dupE.length) return res.status(409).json({ success: false, message: 'Email sudah dipakai' });
 
+        const pwCheck = validatePasswordStrength(String(password));
+        if (!pwCheck.valid) return res.status(400).json({ success: false, message: pwCheck.message });
+
         const hashed = await bcrypt.hash(String(password), 12);
         const { rows } = await db.query(
             `INSERT INTO admins (username, password, nama, email, role)
@@ -684,7 +708,8 @@ exports.updateAdmin = async (req, res) => {
             updates.push(`email = $${i++}`); params.push(emailValue);
         }
         if (password) {
-            if (String(password).length < 6) return res.status(400).json({ success: false, message: 'Password minimal 6 karakter' });
+            const pwCheck = validatePasswordStrength(String(password));
+            if (!pwCheck.valid) return res.status(400).json({ success: false, message: pwCheck.message });
             const hashed = await bcrypt.hash(String(password), 12);
             updates.push(`password = $${i++}`); params.push(hashed);
         }
@@ -777,7 +802,8 @@ exports.changeCredentials = async (req, res) => {
 
         let passwordChanged = false;
         if (new_password) {
-            if (String(new_password).length < 6) return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+            const pwCheck = validatePasswordStrength(new_password);
+            if (!pwCheck.valid) return res.status(400).json({ success: false, message: pwCheck.message });
             const hashed = await bcrypt.hash(new_password, 12);
             updates.push(`password = $${paramCount++}`); params.push(hashed);
             passwordChanged = true;
@@ -794,13 +820,17 @@ exports.changeCredentials = async (req, res) => {
             { expiresIn: '4h' }
         );
 
+        // Re-issue cookies after credential change so the new token + CSRF rotate.
+        setAuthCookie(res, token);
+        const csrfToken = issueCsrfToken(res);
+
         const responseData = {
             id: adminId,
             username: new_username ? String(new_username).trim() : admin.username,
             nama: nama ? String(nama).trim() : admin.nama
         };
 
-        res.json({ success: true, message: 'Credentials updated', token, data: responseData });
+        res.json({ success: true, message: 'Credentials updated', csrf_token: csrfToken, data: responseData });
 
     } catch (error) {
         console.error('❌ Change credentials error:', error);
@@ -1067,7 +1097,7 @@ exports.quickSyncVCF = async (req, res) => {
         const syncKey = process.env.SYNC_SECRET;
         const authHeader = req.headers['x-sync-key'] || req.query.key;
 
-        if (!syncKey || authHeader !== syncKey) {
+        if (!syncKey || !authHeader || !safeEqual(authHeader, syncKey)) {
             return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
@@ -1120,7 +1150,7 @@ exports.quickSyncList = async (req, res) => {
         const syncKey = process.env.SYNC_SECRET;
         const authHeader = req.headers['x-sync-key'] || req.query.key;
 
-        if (!syncKey || authHeader !== syncKey) {
+        if (!syncKey || !authHeader || !safeEqual(authHeader, syncKey)) {
             return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
@@ -1151,7 +1181,7 @@ exports.quickSyncSelected = async (req, res) => {
         const syncKey = process.env.SYNC_SECRET;
         const authHeader = req.headers['x-sync-key'] || req.body.key;
 
-        if (!syncKey || authHeader !== syncKey) {
+        if (!syncKey || !authHeader || !safeEqual(authHeader, syncKey)) {
             return res.status(403).json({ success: false, message: 'Invalid or missing sync key' });
         }
 
@@ -1456,6 +1486,14 @@ exports.getBroadcastStatus = async (req, res) => {
 };
 
 /**
+ * POST /api/admin/logout — clear auth cookies. Idempotent; safe to call without a session.
+ */
+exports.logout = (req, res) => {
+    clearAuthCookies(res);
+    res.json({ success: true, message: 'Logout berhasil' });
+};
+
+/**
  * POST /api/admin/reset
  */
 exports.resetPassword = async (req, res) => {
@@ -1471,6 +1509,9 @@ exports.resetPassword = async (req, res) => {
         const rec = rows[0];
         if (rec.used) return res.status(400).json({ success: false, message: 'Token already used' });
         if (new Date(rec.expires_at) < new Date()) return res.status(400).json({ success: false, message: 'Token expired' });
+
+        const pwCheck = validatePasswordStrength(new_password);
+        if (!pwCheck.valid) return res.status(400).json({ success: false, message: pwCheck.message });
 
         const hash = await bcrypt.hash(new_password, 12);
         await db.query('UPDATE admins SET password = $1 WHERE id = $2', [hash, rec.admin_id]);

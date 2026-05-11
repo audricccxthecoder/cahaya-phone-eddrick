@@ -23,6 +23,13 @@ exports.submitForm = async (req, res) => {
 
         const finalName = nama || nama_lengkap;
 
+        // Honeypot trap — bots auto-fill every <input>; humans never see this field.
+        // Silently 200 so the bot thinks it succeeded and doesn't probe further.
+        if (req.body.website_url) {
+            console.warn('[FORM] Honeypot tripped from', req.ip, '— rejecting silently');
+            return res.json({ success: true, message: 'Pendaftaran berhasil. Terima kasih!' });
+        }
+
         if (!finalName || !whatsapp) {
             return res.status(400).json({
                 success: false,

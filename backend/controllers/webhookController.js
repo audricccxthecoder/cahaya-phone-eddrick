@@ -17,6 +17,7 @@
 const db = require('../config/database');
 const googleService = require('../config/google');
 const { sanitizePhone, validatePhone } = require('../utils/phoneUtils');
+const { safeEqual } = require('../config/csrfMiddleware');
 
 /**
  * Handle incoming message dari WA Client (event internal, bukan HTTP)
@@ -178,7 +179,7 @@ exports.handleWhatsAppWebhook = async (req, res) => {
             return res.status(503).json({ success: false, message: 'Webhook auth not configured' });
         }
         const provided = req.headers['x-wa-secret'] || req.body?.secret;
-        if (provided !== expected) {
+        if (!provided || !safeEqual(provided, expected)) {
             console.warn('[WEBHOOK] Rejected unauthenticated webhook from', req.ip);
             return res.status(401).json({ success: false, message: 'Invalid webhook secret' });
         }
