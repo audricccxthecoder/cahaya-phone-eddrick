@@ -74,7 +74,7 @@
         </div>
     </div>
 
-    <!-- iOS install instructions modal -->
+    <!-- Safari install instructions modal (iOS/iPadOS + macOS) -->
     <div id="iosInstallModal" class="ios-modal" hidden>
         <div class="ios-modal-backdrop" data-close-ios></div>
         <div class="ios-modal-box">
@@ -82,9 +82,11 @@
             <div class="ios-modal-header">
                 <img src="icons/icon-192.png" alt="CP Admin">
                 <h3>Install App Admin</h3>
-                <p>Tambahkan ke Home Screen iPhone/iPad kamu</p>
+                <p id="iosModalSubtitle">Tambahkan ke Home Screen iPhone/iPad kamu</p>
             </div>
-            <ol class="ios-modal-steps">
+
+            <!-- iPhone / iPad steps -->
+            <ol class="ios-modal-steps" data-platform="ios">
                 <li>
                     <span class="ios-step-num">1</span>
                     <div>
@@ -102,6 +104,26 @@
                 <li>
                     <span class="ios-step-num">3</span>
                     <div>Tap <strong>"Add"</strong> di pojok kanan atas.</div>
+                </li>
+            </ol>
+
+            <!-- macOS Safari steps -->
+            <ol class="ios-modal-steps" data-platform="mac" hidden>
+                <li>
+                    <span class="ios-step-num">1</span>
+                    <div>
+                        Klik tombol <strong>Share</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin:0 2px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                        di toolbar Safari (atau menu <strong>File</strong>).
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">2</span>
+                    <div>Pilih <strong>"Add to Dock"</strong>.</div>
+                </li>
+                <li>
+                    <span class="ios-step-num">3</span>
+                    <div>Klik <strong>"Add"</strong> untuk konfirmasi — app muncul di Dock.</div>
                 </li>
             </ol>
         </div>
@@ -140,10 +162,13 @@
         const isIPhone = /iPhone|iPod/.test(ua);
         const isIOS = isIPad || isIPhone;
         const isAndroid = /Android/.test(ua);
-        const isMobile = isIOS || isAndroid;
+        const isMac = /Macintosh/.test(ua) && !isIOS;
+        const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|Edg|Edge|OPR/.test(ua);
+        const isMacSafari = isMac && isSafari;
+        const isFirefox = /Firefox|FxiOS/.test(ua);
         const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 
-        if (!isMobile || isStandalone) return;
+        if (isStandalone) return;
 
         const card = document.getElementById('installAppCard');
         const btn = document.getElementById('installAppBtn');
@@ -151,11 +176,24 @@
         const iosModal = document.getElementById('iosInstallModal');
 
         let deferredPrompt = null;
+        const isDesktop = !isIOS && !isAndroid;
 
-        if (isIOS) {
-            desc.textContent = 'Tap tombol Install untuk lihat caranya di iPhone/iPad.';
-            btn.textContent = 'Install';
+        // iOS / iPadOS / macOS Safari: Safari doesn't fire beforeinstallprompt — show step modal
+        if (isIOS || isMacSafari) {
+            desc.textContent = isIOS
+                ? 'Tap tombol Install untuk lihat caranya.'
+                : 'Klik Install untuk lihat caranya di Safari.';
             card.hidden = false;
+
+            // Swap modal steps + subtitle for the right platform
+            const iosSteps = iosModal.querySelector('[data-platform="ios"]');
+            const macSteps = iosModal.querySelector('[data-platform="mac"]');
+            const subtitle = document.getElementById('iosModalSubtitle');
+            if (isMacSafari) {
+                iosSteps.hidden = true;
+                macSteps.hidden = false;
+                subtitle.textContent = 'Tambahkan ke Dock Mac kamu';
+            }
 
             btn.addEventListener('click', () => {
                 iosModal.hidden = false;
@@ -168,40 +206,53 @@
                     document.body.style.overflow = '';
                 });
             });
-        } else if (isAndroid) {
-            window.addEventListener('beforeinstallprompt', (e) => {
-                e.preventDefault();
-                deferredPrompt = e;
-                card.hidden = false;
-            });
-
-            btn.addEventListener('click', async () => {
-                if (!deferredPrompt) {
-                    desc.textContent = 'Buka menu Chrome (⋮) → "Install app" / "Add to Home screen".';
-                    return;
-                }
-                deferredPrompt.prompt();
-                const { outcome } = await deferredPrompt.userChoice;
-                deferredPrompt = null;
-                if (outcome === 'accepted') {
-                    card.hidden = true;
-                }
-            });
-
-            window.addEventListener('appinstalled', () => {
-                card.hidden = true;
-                deferredPrompt = null;
-            });
-
-            // Fallback: if beforeinstallprompt never fires after a moment (e.g. already installable
-            // criteria not met or browser variant), still show the card with manual instructions.
-            setTimeout(() => {
-                if (card.hidden && !deferredPrompt) {
-                    desc.textContent = 'Buka menu browser (⋮) → "Install app" / "Add to Home screen".';
-                    card.hidden = false;
-                }
-            }, 2500);
+            return;
         }
+
+        // Firefox doesn't support PWA install at all — keep the banner hidden
+        if (isFirefox) return;
+
+        // Chrome / Edge (desktop + Android): native install via beforeinstallprompt
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            desc.textContent = isDesktop
+                ? 'Install langsung biar bisa dibuka kayak app, tanpa tab browser.'
+                : 'Install di home screen biar lebih cepat & fullscreen.';
+            card.hidden = false;
+        });
+
+        btn.addEventListener('click', async () => {
+            if (!deferredPrompt) {
+                desc.textContent = isDesktop
+                    ? 'Klik icon install (⊕) di address bar, atau menu ⋮ → "Install Cahaya Phone Admin".'
+                    : 'Buka menu Chrome (⋮) → "Install app" / "Add to Home screen".';
+                return;
+            }
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            deferredPrompt = null;
+            if (outcome === 'accepted') {
+                card.hidden = true;
+            }
+        });
+
+        window.addEventListener('appinstalled', () => {
+            card.hidden = true;
+            deferredPrompt = null;
+        });
+
+        // Fallback: if event never fires (app already qualifies but browser doesn't prompt,
+        // or criteria not met), still show the card with manual instructions so the user
+        // doesn't have to hunt for the install icon in the address bar.
+        setTimeout(() => {
+            if (card.hidden && !deferredPrompt) {
+                desc.textContent = isDesktop
+                    ? 'Klik icon install (⊕) di address bar, atau menu ⋮ → "Install Cahaya Phone Admin".'
+                    : 'Buka menu browser (⋮) → "Install app" / "Add to Home screen".';
+                card.hidden = false;
+            }
+        }, 2500);
     })();
     </script>
 </body>
