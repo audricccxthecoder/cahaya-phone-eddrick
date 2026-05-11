@@ -60,6 +60,51 @@
                 <a href="forgot.html" style="font-size:13px;color:#8C8078;text-decoration:none;transition:color 0.2s;" onmouseover="this.style.color='#B91C1C'" onmouseout="this.style.color='#8C8078'">Lupa password?</a>
             </div>
         </div>
+
+        <!-- Download App banner (mobile only, hidden by default) -->
+        <div id="installAppCard" class="install-app-card" hidden>
+            <div class="install-app-icon">
+                <img src="icons/icon-192.png" alt="CP Admin">
+            </div>
+            <div class="install-app-body">
+                <div class="install-app-title">Download App Admin</div>
+                <div class="install-app-desc" id="installAppDesc">Install di home screen biar lebih cepat & fullscreen.</div>
+            </div>
+            <button type="button" id="installAppBtn" class="install-app-btn">Install</button>
+        </div>
+    </div>
+
+    <!-- iOS install instructions modal -->
+    <div id="iosInstallModal" class="ios-modal" hidden>
+        <div class="ios-modal-backdrop" data-close-ios></div>
+        <div class="ios-modal-box">
+            <button type="button" class="ios-modal-close" data-close-ios aria-label="Tutup">&times;</button>
+            <div class="ios-modal-header">
+                <img src="icons/icon-192.png" alt="CP Admin">
+                <h3>Install App Admin</h3>
+                <p>Tambahkan ke Home Screen iPhone/iPad kamu</p>
+            </div>
+            <ol class="ios-modal-steps">
+                <li>
+                    <span class="ios-step-num">1</span>
+                    <div>
+                        Tap tombol <strong>Share</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin:0 2px;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                        di bagian bawah Safari.
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">2</span>
+                    <div>Scroll, lalu pilih <strong>"Add to Home Screen"</strong>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1A1412" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-left:4px;"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                    </div>
+                </li>
+                <li>
+                    <span class="ios-step-num">3</span>
+                    <div>Tap <strong>"Add"</strong> di pojok kanan atas.</div>
+                </li>
+            </ol>
+        </div>
     </div>
 
     <script>
@@ -86,6 +131,78 @@
                     .catch((err) => console.warn('SW registration failed:', err));
             });
         }
+    </script>
+
+    <script>
+    (function() {
+        const ua = navigator.userAgent || '';
+        const isIPad = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isIPhone = /iPhone|iPod/.test(ua);
+        const isIOS = isIPad || isIPhone;
+        const isAndroid = /Android/.test(ua);
+        const isMobile = isIOS || isAndroid;
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+        if (!isMobile || isStandalone) return;
+
+        const card = document.getElementById('installAppCard');
+        const btn = document.getElementById('installAppBtn');
+        const desc = document.getElementById('installAppDesc');
+        const iosModal = document.getElementById('iosInstallModal');
+
+        let deferredPrompt = null;
+
+        if (isIOS) {
+            desc.textContent = 'Tap tombol Install untuk lihat caranya di iPhone/iPad.';
+            btn.textContent = 'Install';
+            card.hidden = false;
+
+            btn.addEventListener('click', () => {
+                iosModal.hidden = false;
+                document.body.style.overflow = 'hidden';
+            });
+
+            iosModal.querySelectorAll('[data-close-ios]').forEach(el => {
+                el.addEventListener('click', () => {
+                    iosModal.hidden = true;
+                    document.body.style.overflow = '';
+                });
+            });
+        } else if (isAndroid) {
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPrompt = e;
+                card.hidden = false;
+            });
+
+            btn.addEventListener('click', async () => {
+                if (!deferredPrompt) {
+                    desc.textContent = 'Buka menu Chrome (⋮) → "Install app" / "Add to Home screen".';
+                    return;
+                }
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                deferredPrompt = null;
+                if (outcome === 'accepted') {
+                    card.hidden = true;
+                }
+            });
+
+            window.addEventListener('appinstalled', () => {
+                card.hidden = true;
+                deferredPrompt = null;
+            });
+
+            // Fallback: if beforeinstallprompt never fires after a moment (e.g. already installable
+            // criteria not met or browser variant), still show the card with manual instructions.
+            setTimeout(() => {
+                if (card.hidden && !deferredPrompt) {
+                    desc.textContent = 'Buka menu browser (⋮) → "Install app" / "Add to Home screen".';
+                    card.hidden = false;
+                }
+            }, 2500);
+        }
+    })();
     </script>
 </body>
 </html>
