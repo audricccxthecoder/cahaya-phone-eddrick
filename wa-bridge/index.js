@@ -85,21 +85,137 @@ function isReady() {
     return sock && clientState.status === 'open';
 }
 
-async function forwardIncoming(payload) {
-    if (!WEBHOOK_URL) return;
+// ============================================
+// FORWARD QUEUE — survive backend downtime without losing customer messages
+//
+// If the backend webhook is unreachable when a message arrives, naive forwarding
+// would just log a warning and lose the message — the customer's chat still
+// exists on their phone and our shop's WA, but our database never learns about
+// it (no new "Customer - dd/mm/yyyy" row, no opt-out detection, no auto-reply
+// trigger, no analytics).
+//
+// To prevent that, failed forwards are queued in memory AND persisted to disk
+// in SESSION_DIR (same Railway volume as Baileys auth — survives container
+// restart). A retry loop drains the queue when the backend recovers.
+// ============================================
+const fs = require('fs');
+const path = require('path');
+const PENDING_FORWARDS_FILE = path.join(SESSION_DIR, 'pending-forwards.json');
+const FORWARD_RETRY_INTERVAL_MS = 30_000;        // every 30s while items pending
+const FORWARD_RETRY_BATCH = 5;                   // up to 5 retries per cycle
+const FORWARD_MAX_ATTEMPTS = 200;                // ~200 × 30s ≈ 100 minutes ceiling
+const FORWARD_QUEUE_MAX_SIZE = 1000;             // hard cap so backend outage doesn't OOM us
+
+let pendingForwards = [];
+let forwardRetryTimer = null;
+let forwardSaveTimer = null;
+
+function loadPendingForwards() {
     try {
-        const res = await fetch(WEBHOOK_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-WA-Secret': API_SECRET },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) {
-            console.warn(`[WEBHOOK] Non-2xx response: ${res.status}`);
+        if (fs.existsSync(PENDING_FORWARDS_FILE)) {
+            const raw = fs.readFileSync(PENDING_FORWARDS_FILE, 'utf8');
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) {
+                pendingForwards = arr;
+                console.log(`[FORWARD] Loaded ${pendingForwards.length} pending forward(s) from disk`);
+                if (pendingForwards.length > 0) ensureRetryTimer();
+            }
         }
     } catch (err) {
-        console.warn('[WEBHOOK] Forward failed:', err.message);
+        console.warn('[FORWARD] Could not load pending forwards:', err.message);
     }
 }
+
+function savePendingForwards() {
+    // Debounce: write at most once per second to avoid disk thrashing during bursts.
+    if (forwardSaveTimer) return;
+    forwardSaveTimer = setTimeout(() => {
+        forwardSaveTimer = null;
+        try {
+            fs.mkdirSync(SESSION_DIR, { recursive: true });
+            fs.writeFileSync(PENDING_FORWARDS_FILE, JSON.stringify(pendingForwards));
+        } catch (err) {
+            console.warn('[FORWARD] Could not persist pending forwards:', err.message);
+        }
+    }, 1000);
+}
+
+function ensureRetryTimer() {
+    if (forwardRetryTimer) return;
+    forwardRetryTimer = setInterval(retryPendingForwards, FORWARD_RETRY_INTERVAL_MS);
+}
+
+function stopRetryTimer() {
+    if (forwardRetryTimer) {
+        clearInterval(forwardRetryTimer);
+        forwardRetryTimer = null;
+    }
+}
+
+async function attemptForward(payload) {
+    const res = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-WA-Secret': API_SECRET },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return true;
+}
+
+async function retryPendingForwards() {
+    if (pendingForwards.length === 0) {
+        stopRetryTimer();
+        return;
+    }
+    const batch = pendingForwards.splice(0, FORWARD_RETRY_BATCH);
+    const failedAgain = [];
+    let successCount = 0;
+
+    for (const entry of batch) {
+        entry.attempts = (entry.attempts || 0) + 1;
+        try {
+            await attemptForward(entry.payload);
+            successCount++;
+        } catch (err) {
+            if (entry.attempts < FORWARD_MAX_ATTEMPTS) {
+                failedAgain.push(entry);
+            } else {
+                console.error(`[FORWARD] Dropping message from ${entry.payload.sender} after ${entry.attempts} attempts`);
+            }
+        }
+    }
+    // Failed-again items go to the BACK of the queue so a stubborn item doesn't block fresher ones
+    pendingForwards.push(...failedAgain);
+    savePendingForwards();
+
+    if (successCount > 0) {
+        console.log(`[FORWARD] Retry batch: ${successCount} delivered, ${failedAgain.length} still pending (queue size: ${pendingForwards.length})`);
+    }
+    if (pendingForwards.length === 0) stopRetryTimer();
+}
+
+async function forwardIncoming(payload) {
+    if (!WEBHOOK_URL) return;
+
+    // Drain immediately if backend is healthy
+    try {
+        await attemptForward(payload);
+        return;
+    } catch (err) {
+        // Failed — enqueue for retry
+        if (pendingForwards.length >= FORWARD_QUEUE_MAX_SIZE) {
+            console.error(`[FORWARD] Queue full (${FORWARD_QUEUE_MAX_SIZE}); dropping oldest entry`);
+            pendingForwards.shift();
+        }
+        pendingForwards.push({ payload, queuedAt: Date.now(), attempts: 0 });
+        savePendingForwards();
+        ensureRetryTimer();
+        console.warn(`[WEBHOOK] Forward failed (${err.message}), queued. Pending: ${pendingForwards.length}`);
+    }
+}
+
+// Restore queued forwards on startup (in case container restarted while items were pending)
+loadPendingForwards();
 
 // ============================================
 // BAILEYS SOCKET LIFECYCLE
@@ -320,7 +436,11 @@ app.get('/api/status', authCheck, (req, res) => {
         info: clientState.info,
         lastError: clientState.lastError,
         connectedAt: clientState.connectedAt,
-        disconnectedAt: clientState.disconnectedAt
+        disconnectedAt: clientState.disconnectedAt,
+        pendingForwards: pendingForwards.length,
+        oldestPendingForwardAgeSec: pendingForwards.length > 0
+            ? Math.round((Date.now() - pendingForwards[0].queuedAt) / 1000)
+            : 0
     });
 });
 
