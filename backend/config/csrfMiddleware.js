@@ -69,7 +69,7 @@ function cookieOptions(httpOnly = true) {
         secure,
         sameSite,
         path: '/',
-        maxAge: 4 * 60 * 60 * 1000  // 4 hours, matches JWT expiry
+        maxAge: 12 * 60 * 60 * 1000  // 12 hours, matches JWT expiry
     };
 }
 

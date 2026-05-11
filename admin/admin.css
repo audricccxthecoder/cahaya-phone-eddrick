@@ -372,6 +372,13 @@ body {
     gap: 14px;
 }
 
+/* `display: flex` above overrides the browser's default [hidden]{display:none},
+   so JS toggling `.hidden = true` doesn't actually hide the OL. Force the rule
+   back so the right platform's steps show alone. */
+.ios-modal-steps[hidden] {
+    display: none !important;
+}
+
 .ios-modal-steps li {
     display: flex;
     align-items: flex-start;

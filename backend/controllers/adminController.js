@@ -173,7 +173,7 @@ exports.login = async (req, res) => {
         const token = jwt.sign(
             { id: admin.id, username: admin.username, role: admin.role || 'staff' },
             process.env.JWT_SECRET,
-            { expiresIn: '4h' }
+            { expiresIn: '12h' }
         );
 
         // Set httpOnly auth cookie (not reachable from JS — XSS can't steal it)
@@ -817,7 +817,7 @@ exports.changeCredentials = async (req, res) => {
         const token = jwt.sign(
             { id: adminId, username: new_username ? String(new_username).trim() : admin.username, role: admin.role || 'staff' },
             process.env.JWT_SECRET,
-            { expiresIn: '4h' }
+            { expiresIn: '12h' }
         );
 
         // Re-issue cookies after credential change so the new token + CSRF rotate.
