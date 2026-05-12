@@ -312,12 +312,12 @@
                     <h3>Pengaturan Otomatis Global</h3>
                 </div>
                 <div class="card-body">
-                    <p class="muted" style="margin-bottom:14px;">Kontrol pengiriman pesan otomatis ke semua customer. Matikan jika sedang tidak ingin mengirim otomatis.</p>
+                    <p class="muted" style="margin-bottom:14px;">Kontrol pengiriman pesan otomatis ke semua customer. Turn off jika sedang tidak ingin mengirim otomatis.</p>
                     <div style="display:grid;grid-template-columns:1fr;gap:12px;">
                         <label style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#F5F3F0;border:1px solid #EDE8E3;border-radius:10px;cursor:pointer;">
                             <div>
                                 <strong style="font-size:14px;color:#1A1412;">Auto-Reply Form Submit</strong>
-                                <div style="font-size:12px;color:#8C8078;margin-top:2px;">Customer yang isi form langsung dikirim ucapan terima kasih via WA</div>
+                                <div style="font-size:12px;color:#8C8078;margin-top:2px;">Customer yang isi form belanja langsung dikirim ucapan terima kasih via WA</div>
                             </div>
                             <div style="position:relative;display:inline-block;width:46px;height:24px;flex-shrink:0;">
                                 <input type="checkbox" id="formAutoReplyToggle" onchange="saveAutoToggle('form_autoreply_enabled', this.checked)" style="opacity:0;width:0;height:0;">
@@ -327,7 +327,7 @@
                         <label style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#F5F3F0;border:1px solid #EDE8E3;border-radius:10px;cursor:pointer;">
                             <div>
                                 <strong style="font-size:14px;color:#1A1412;">Auto-Send Ulang Tahun</strong>
-                                <div style="font-size:12px;color:#8C8078;margin-top:2px;">Kirim ucapan ultah otomatis tiap pagi (cron 08:00 WITA) ke customer yang ultah</div>
+                                <div style="font-size:12px;color:#8C8078;margin-top:2px;">Kirim ucapan ulang tahun otomatis tiap pagi (cron 09:00 WITA) ke customer yang ulang tahun</div>
                             </div>
                             <div style="position:relative;display:inline-block;width:46px;height:24px;flex-shrink:0;">
                                 <input type="checkbox" id="birthdayAutoSendGlobal" onchange="saveAutoToggle('birthday_auto_send', this.checked)" style="opacity:0;width:0;height:0;">
