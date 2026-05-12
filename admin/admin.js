@@ -1195,7 +1195,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             <th>Nama</th>
             <th>WhatsApp</th>`;
         if (isBelanja) {
-            html += `<th>Sales</th><th>Produk Terakhir</th><th>Harga Terakhir</th><th>Metode</th>`;
+            html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Metode Pembayaran</th>`;
         } else {
             html += `<th>Catatan</th>`;
         }
@@ -1503,15 +1503,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <div class="detail-value">${esc(customer.alamat || '-')}</div>
                 </div>
                 <div class="detail-group">
-                    <div class="detail-label">Produk Terakhir</div>
+                    <div class="detail-label">Produk</div>
                     <div class="detail-value">${esc((customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-')}</div>
                 </div>
                 <div class="detail-group">
-                    <div class="detail-label">Harga Terakhir</div>
+                    <div class="detail-label">Harga</div>
                     <div class="detail-value">${harga}</div>
                 </div>
                 <div class="detail-group">
-                    <div class="detail-label">Metode Bayar</div>
+                    <div class="detail-label">Metode Pembayaran</div>
                     <div class="detail-value">${esc(customer.metode_pembayaran || '-')}</div>
                 </div>
                 <div class="detail-group">
