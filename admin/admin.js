@@ -3018,10 +3018,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     window.disconnectGoogle = async function() {
         if (!confirm('Putuskan Google Contacts? Kontak baru tidak akan otomatis tersimpan.')) return;
         try {
-            await fetch(`${API_URL}/google/disconnect`, {
-                method: 'POST',
-                credentials: 'include'
-            });
+            // Use apiCall so the X-CSRF-Token header is included — backend rejects
+            // bare POST with 403 since cookie-based auth requires CSRF double-submit.
+            const result = await apiCall('/google/disconnect', { method: 'POST' });
+            if (result && result.success === false) {
+                alert('Gagal memutuskan: ' + (result.message || 'unknown'));
+            }
             checkGoogleStatus();
         } catch (err) {
             alert('Gagal memutuskan: ' + err.message);

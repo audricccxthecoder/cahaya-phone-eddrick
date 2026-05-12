@@ -2299,13 +2299,95 @@ function rowsToCsv(rows, columns) {
     return csv;
 }
 
+// Defensive table dump — uses SELECT * so schema differences across migrations
+// don't break the backup. Columns are auto-detected from the result.fields
+// metadata. If the table doesn't exist, skips silently and returns "" so the
+// rest of the backup can still complete.
+async function dumpTable(sectionLabel, sql, params = [], headerOverride = null) {
+    try {
+        const result = await db.query(sql, params);
+        const columns = headerOverride || result.fields.map(f => f.name);
+        if (result.rows.length === 0) {
+            return `=== ${sectionLabel} (0 rows) ===\n${columns.join(',')}\n\n`;
+        }
+        return `=== ${sectionLabel} (${result.rows.length} rows) ===\n` + rowsToCsv(result.rows, columns) + '\n';
+    } catch (err) {
+        console.warn(`[Backup] Could not dump ${sectionLabel}: ${err.message}`);
+        return `=== ${sectionLabel} (skipped: ${err.message}) ===\n\n`;
+    }
+}
+
 exports.fullBackup = async (req, res) => {
     try {
-        // Pull every important table. Sensitive columns (password hashes, tokens)
-        // are excluded explicitly — backup is for data recovery, not credential dump.
-        // `last_purchase_at` is a computed value (MAX(created_at) from purchases),
-        // NOT a column on customers. Compute it inline via LEFT JOIN so the backup
-        // still includes that data without breaking on the missing column.
+        const __ts = new Date().toISOString();
+        let csv = `# CAHAYA PHONE FULL BACKUP\n# Generated: ${__ts}\n# All sections use SELECT * so columns reflect your CURRENT schema.\n\n`;
+
+        // CUSTOMERS — augmented with computed purchase aggregates via LEFT JOIN.
+        // c.* dumps whatever columns customers actually has — schema drift safe.
+        csv += await dumpTable('CUSTOMERS',
+            `SELECT c.*,
+                    p.last_purchase_at,
+                    COALESCE(p.total_spent, 0) AS total_spent,
+                    COALESCE(p.purchase_count, 0) AS purchase_count
+             FROM customers c
+             LEFT JOIN (
+                 SELECT customer_id,
+                        MAX(created_at) AS last_purchase_at,
+                        SUM(COALESCE(harga, 0) * COALESCE(qty, 1)) AS total_spent,
+                        COUNT(*) AS purchase_count
+                 FROM purchases GROUP BY customer_id
+             ) p ON p.customer_id = c.id
+             ORDER BY c.id ASC`
+        );
+
+        csv += await dumpTable('PURCHASES', `SELECT * FROM purchases ORDER BY id ASC`);
+
+        csv += await dumpTable('MESSAGES (last 6 months)',
+            `SELECT m.*, c.nama_lengkap AS customer_nama, c.whatsapp AS customer_whatsapp
+             FROM messages m LEFT JOIN customers c ON c.id = m.customer_id
+             WHERE m.sent_at > NOW() - INTERVAL '6 months'
+             ORDER BY m.id ASC`
+        );
+
+        csv += await dumpTable('BROADCAST JOBS', `SELECT * FROM broadcast_jobs ORDER BY id ASC`);
+        csv += await dumpTable('BROADCAST RECIPIENTS', `SELECT * FROM broadcast_recipients ORDER BY id ASC`);
+
+        csv += await dumpTable('BIRTHDAY GREETINGS',
+            `SELECT bg.*, c.nama_lengkap AS customer_nama, c.whatsapp AS customer_whatsapp
+             FROM birthday_greetings bg LEFT JOIN customers c ON c.id = bg.customer_id
+             ORDER BY bg.id ASC`
+        );
+
+        // Admins — explicit column list (NEVER include password hash in backup).
+        csv += await dumpTable('ADMINS (no passwords)',
+            `SELECT id, username, nama, email, role, created_at FROM admins ORDER BY id ASC`,
+            [],
+            ['id', 'username', 'nama', 'email', 'role', 'created_at']
+        );
+
+        csv += await dumpTable('APP SETTINGS', `SELECT * FROM app_settings ORDER BY key ASC`);
+
+        const filename = `cahaya-phone-full-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send('﻿' + csv);   // BOM for Excel
+
+        db.query(
+            `INSERT INTO app_settings (key, value) VALUES ('last_backup_at', $1)
+             ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+            [new Date().toISOString()]
+        ).catch(err => console.warn('[Backup] Could not save timestamp:', err.message));
+        return;
+    } catch (err) {
+        console.error('❌ Full backup error:', err);
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: 'Gagal generate backup: ' + err.message });
+        }
+        return;
+    }
+
+    // === DEAD CODE BELOW — kept temporarily; safe to delete in a follow-up commit ===
+    /* DISABLED LEGACY PATH
         const { rows: customers } = await db.query(
             `SELECT c.id, c.nama_lengkap, c.whatsapp, c.source, c.status, c.tipe,
                     c.tanggal_lahir, c.alamat, c.merk_unit, c.tipe_unit, c.harga, c.qty,
@@ -2401,9 +2483,10 @@ exports.fullBackup = async (req, res) => {
             [new Date().toISOString()]
         ).catch(err => console.warn('[Backup] Could not save timestamp:', err.message));
     } catch (err) {
-        console.error('❌ Full backup error:', err);
-        res.status(500).json({ success: false, message: 'Gagal generate backup: ' + err.message });
+        console.error('❌ Full backup error (legacy path):', err);
+        if (!res.headersSent) res.status(500).json({ success: false, message: 'Gagal generate backup: ' + err.message });
     }
+    */
 };
 
 /**
