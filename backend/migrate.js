@@ -397,6 +397,76 @@ async function migrate() {
     `);
     console.log('✅ View customer_stats created/verified');
 
+    // ============================================
+    // VIEW: customer_purchases_detail
+    // For Supabase Table Editor browsing — one row per purchase, with full
+    // customer info denormalized so the owner doesn't have to JOIN manually.
+    // Example use: filter by customer_nama, sort by total spent, etc.
+    // ============================================
+    console.log('Creating view: customer_purchases_detail...');
+    await client.query(`DROP VIEW IF EXISTS customer_purchases_detail`);
+    await client.query(`
+      CREATE VIEW customer_purchases_detail AS
+      SELECT
+        p.id AS purchase_id,
+        p.customer_id,
+        c.nama_lengkap AS customer_nama,
+        c.whatsapp AS customer_whatsapp,
+        c.alamat AS customer_alamat,
+        p.merk_unit,
+        p.tipe_unit,
+        p.harga,
+        p.qty,
+        (COALESCE(p.harga, 0) * COALESCE(p.qty, 1)) AS subtotal,
+        p.nama_sales,
+        p.metode_pembayaran,
+        p.source,
+        (p.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar') AS purchase_date_wita,
+        p.created_at AS purchase_date_utc
+      FROM purchases p
+      LEFT JOIN customers c ON c.id = p.customer_id
+      ORDER BY p.created_at DESC
+    `);
+    console.log('✅ View customer_purchases_detail created/verified');
+
+    // ============================================
+    // VIEW: customer_summary
+    // One row per customer with aggregated purchase totals — for at-a-glance
+    // "siapa pelanggan top, berapa total belanja"
+    // ============================================
+    console.log('Creating view: customer_summary...');
+    await client.query(`DROP VIEW IF EXISTS customer_summary`);
+    await client.query(`
+      CREATE VIEW customer_summary AS
+      SELECT
+        c.id,
+        c.nama_lengkap,
+        c.whatsapp,
+        c.tipe,
+        c.status,
+        c.source,
+        c.alamat,
+        c.tanggal_lahir,
+        COALESCE(agg.purchase_count, 0) AS total_purchases,
+        COALESCE(agg.total_qty, 0) AS total_unit_bought,
+        COALESCE(agg.total_spent, 0) AS total_spent,
+        agg.last_purchase_at,
+        c.last_incoming_message_at,
+        c.created_at,
+        c.updated_at
+      FROM customers c
+      LEFT JOIN (
+        SELECT customer_id,
+               COUNT(*) AS purchase_count,
+               SUM(COALESCE(qty, 1)) AS total_qty,
+               SUM(COALESCE(harga, 0) * COALESCE(qty, 1)) AS total_spent,
+               MAX(created_at) AS last_purchase_at
+        FROM purchases GROUP BY customer_id
+      ) agg ON agg.customer_id = c.id
+      ORDER BY agg.total_spent DESC NULLS LAST
+    `);
+    console.log('✅ View customer_summary created/verified');
+
     // Buat default admin jika belum ada, atau update existing
     const { rows: adminRows } = await client.query('SELECT COUNT(*) as count FROM admins');
     if (parseInt(adminRows[0].count) === 0) {

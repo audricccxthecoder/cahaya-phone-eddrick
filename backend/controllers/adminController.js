@@ -2284,6 +2284,19 @@ exports.getAuditLog = async (req, res) => {
 // ============================================
 function escapeCsv(v) {
     if (v === null || v === undefined) return '';
+    // pg returns TIMESTAMP columns as JS Date objects. Default toString() outputs
+    // UTC like "Mon May 11 2026 08:53:27 GMT+0000" — confusing because the dashboard
+    // shows WITA. Convert to WITA in dd/mm/yyyy hh:mm:ss format to match.
+    if (v instanceof Date) {
+        if (isNaN(v.getTime())) return '';
+        const parts = v.toLocaleString('id-ID', {
+            timeZone: 'Asia/Makassar',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false
+        });
+        return parts + ' WITA';
+    }
     const s = String(v);
     if (/[",\n\r]/.test(s)) {
         return '"' + s.replace(/"/g, '""') + '"';
@@ -2340,13 +2353,18 @@ exports.fullBackup = async (req, res) => {
              ORDER BY c.id ASC`
         );
 
-        csv += await dumpTable('PURCHASES', `SELECT * FROM purchases ORDER BY id ASC`);
-
-        csv += await dumpTable('MESSAGES (last 6 months)',
-            `SELECT m.*, c.nama_lengkap AS customer_nama, c.whatsapp AS customer_whatsapp
-             FROM messages m LEFT JOIN customers c ON c.id = m.customer_id
-             WHERE m.sent_at > NOW() - INTERVAL '6 months'
-             ORDER BY m.id ASC`
+        // PURCHASES joined with customer info → owner can read "Budi beli iPhone 15
+        // Rp 16jt dari sales Yusuf pada 11/05/2026" directly in the CSV, no need to
+        // cross-reference customer_id.
+        csv += await dumpTable('PURCHASES (with customer info)',
+            `SELECT p.id, p.customer_id,
+                    c.nama_lengkap AS customer_nama, c.whatsapp AS customer_whatsapp,
+                    p.merk_unit, p.tipe_unit, p.harga, p.qty,
+                    (COALESCE(p.harga, 0) * COALESCE(p.qty, 1)) AS subtotal,
+                    p.nama_sales, p.metode_pembayaran, p.source, p.created_at
+             FROM purchases p
+             LEFT JOIN customers c ON c.id = p.customer_id
+             ORDER BY p.created_at DESC`
         );
 
         csv += await dumpTable('BROADCAST JOBS', `SELECT * FROM broadcast_jobs ORDER BY id ASC`);
