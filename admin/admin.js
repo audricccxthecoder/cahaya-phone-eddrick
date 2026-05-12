@@ -1418,25 +1418,18 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const totalUnit = purchases.reduce((sum, p) => sum + (Number(p.qty) || 1), 0);
             const totalOmzet = purchases.reduce((sum, p) => sum + ((Number(p.harga) || 0) * (Number(p.qty) || 1)), 0);
 
-            // Tally payment methods used across all purchases so the summary can show
-            // "Cash (2x), Transfer (1x)" instead of only the last metode_pembayaran.
-            const paymentCounts = purchases.reduce((acc, p) => {
-                const m = (p.metode_pembayaran || 'Tidak dicatat').trim();
-                acc[m] = (acc[m] || 0) + 1;
-                return acc;
-            }, {});
-            const paymentBadges = Object.entries(paymentCounts)
-                .sort((a, b) => b[1] - a[1])   // most-used method first
-                .map(([method, count]) => `<span style="background:#fff;border:1px solid #FDE68A;color:#92400E;padding:2px 8px;border-radius:10px;font-size:11px;margin-right:4px;display:inline-block;margin-bottom:2px;">${esc(method)} <strong>${count}x</strong></span>`)
-                .join('');
-
             const purchaseSummary = purchases.map((p, i) => {
                 const q = Number(p.qty) || 1;
                 const item = (p.merk_unit || '-') + (p.tipe_unit ? ' ' + p.tipe_unit : '');
+                const metode = (p.metode_pembayaran || '').trim();
+                // Small inline metode tag right after the unit name — compact, no dedicated row
+                const metodeTag = metode
+                    ? ` <span style="font-size:11px;color:#8C8078;font-weight:400;">· ${esc(metode)}</span>`
+                    : '';
                 return `
                 <div style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid #EDE8E3;font-size:13px;">
                     <div style="color:#5C534B;">${formatTanggal(p.created_at)}</div>
-                    <div style="font-weight:600;color:#1A1412;">${item}${q > 1 ? ` <span style="background:#B91C1C;color:#fff;padding:1px 6px;border-radius:6px;font-size:11px;margin-left:4px;">${q} unit</span>` : ''}</div>
+                    <div style="font-weight:600;color:#1A1412;">${item}${q > 1 ? ` <span style="background:#B91C1C;color:#fff;padding:1px 6px;border-radius:6px;font-size:11px;margin-left:4px;">${q} unit</span>` : ''}${metodeTag}</div>
                 </div>
             `;
             }).join('');
@@ -1452,9 +1445,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                             <span>Ringkasan Pembelian (${totalUnit} unit total):</span>
                             <span>Total: ${formatRpDetail(totalOmzet)}</span>
                         </div>
-                        <div style="font-size:12px;color:#92400E;margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed #FDE68A;">
-                            <strong>Metode bayar dipakai:</strong> ${paymentBadges || '<span style="color:#8C8078;">—</span>'}
-                        </div>
                         ${purchaseSummary}
                     </div>
                     <div style="overflow-x:auto;border:1px solid #EDE8E3;border-radius:8px;">
@@ -1467,7 +1457,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                 <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Harga Satuan</th>
                                 <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Subtotal</th>
                                 <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Sales</th>
-                                <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Metode Bayar</th>
                             </tr></thead>
                             <tbody>
                                 ${purchases.map((p, i) => {
@@ -1482,7 +1471,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${h ? formatRpDetail(h) : '-'}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:600;color:#B91C1C;">${h ? formatRpDetail(h * q) : '-'}</td>
                                         <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${esc(p.nama_sales || '-')}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${esc(p.metode_pembayaran || '-')}</td>
                                     </tr>
                                 `;
                                 }).join('')}
@@ -1524,24 +1512,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Metode Bayar</div>
-                    <div class="detail-value">${
-                        // Show all distinct payment methods used across purchases, with the
-                        // latest one marked. Falls back to customer.metode_pembayaran for
-                        // Chat-Only or pre-purchases-table customers.
-                        (() => {
-                            const purchases = customer.purchases || [];
-                            if (purchases.length === 0) return esc(customer.metode_pembayaran || '-');
-                            const seen = new Set();
-                            const methods = [];
-                            for (const p of purchases) {
-                                const m = (p.metode_pembayaran || '').trim();
-                                if (m && !seen.has(m)) { seen.add(m); methods.push(m); }
-                            }
-                            if (methods.length === 0) return '-';
-                            if (methods.length === 1) return esc(methods[0]);
-                            return methods.map(m => esc(m)).join(', ') + ' <span style="font-size:11px;color:#8C8078;">(lihat riwayat)</span>';
-                        })()
-                    }</div>
+                    <div class="detail-value">${esc(customer.metode_pembayaran || '-')}</div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Sales</div>
