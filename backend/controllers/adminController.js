@@ -2284,18 +2284,22 @@ exports.getAuditLog = async (req, res) => {
 // ============================================
 function escapeCsv(v) {
     if (v === null || v === undefined) return '';
-    // pg returns TIMESTAMP columns as JS Date objects. Default toString() outputs
-    // UTC like "Mon May 11 2026 08:53:27 GMT+0000" — confusing because the dashboard
-    // shows WITA. Convert to WITA in dd/mm/yyyy hh:mm:ss format to match.
+    // pg returns TIMESTAMP columns as JS Date objects. Build the WITA string
+    // manually instead of relying on toLocaleString — that one inserts a comma
+    // between the date and time portion (e.g. "11/05/2026, 08.00.00") which
+    // breaks the CSV column boundary and shifts every subsequent column.
     if (v instanceof Date) {
         if (isNaN(v.getTime())) return '';
-        const parts = v.toLocaleString('id-ID', {
-            timeZone: 'Asia/Makassar',
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
-        });
-        return parts + ' WITA';
+        // WITA = UTC+8. Shift UTC ms by 8h then read .getUTC* parts.
+        const wita = new Date(v.getTime() + 8 * 60 * 60 * 1000);
+        const pad = n => String(n).padStart(2, '0');
+        const dd = pad(wita.getUTCDate());
+        const mm = pad(wita.getUTCMonth() + 1);
+        const yyyy = wita.getUTCFullYear();
+        const hh = pad(wita.getUTCHours());
+        const mi = pad(wita.getUTCMinutes());
+        const ss = pad(wita.getUTCSeconds());
+        return `${dd}/${mm}/${yyyy} ${hh}:${mi}:${ss} WITA`;
     }
     const s = String(v);
     if (/[",\n\r]/.test(s)) {
