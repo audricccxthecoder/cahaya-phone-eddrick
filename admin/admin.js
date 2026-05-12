@@ -796,24 +796,32 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             banner.style.display = 'block';
 
-            // Wire buttons
-            document.getElementById('backupBannerDownload').onclick = async () => {
-                await window.downloadFullBackup();
-                // Reveal cleanup button so admin can finish the monthly workflow
-                document.getElementById('backupBannerCleanup').style.display = 'inline-flex';
-            };
-
-            document.getElementById('backupBannerCleanup').onclick = async () => {
-                if (!confirm('Sudah PASTIKAN backup CSV ter-download & bisa dibuka di Excel?\n\nSetelah ini, data lama (>14-30 hari) akan dihapus permanen dari database.\n\nLanjutkan?')) return;
-                const result = await apiCall('/admin/cleanup/delete', { method: 'POST' });
-                if (result && result.success) {
-                    alert(`✅ ${result.deleted.total} data lama berhasil dihapus.\n\nDetail:\n• Chat lama: ${result.deleted.messages}\n• WA logs: ${result.deleted.waMessageLogs}\n• Broadcast: ${result.deleted.broadcastJobs} job + ${result.deleted.broadcastRecipients} penerima\n• Audit: ${result.deleted.auditLogs}`);
-                    banner.style.display = 'none';
-                    if (typeof loadResourceUsage === 'function') loadResourceUsage();
+            // Wire buttons. Backup + Cleanup live on the Customer tab now —
+            // banner just routes the user there and (for backup) auto-clicks the button.
+            const goToCustomerTab = (autoClickBtnId) => {
+                const navLink = document.querySelector('a.nav-item[data-page="customers"]')
+                              || document.querySelector('a.nav-item[href*="customers"]');
+                if (navLink) {
+                    navLink.click();
+                    // Small delay so the page swap completes before we trigger the button
+                    setTimeout(() => {
+                        if (autoClickBtnId) {
+                            const btn = document.getElementById(autoClickBtnId);
+                            if (btn) btn.click();
+                        }
+                    }, 250);
                 } else {
-                    alert('❌ Cleanup gagal. Cek log untuk detail.');
+                    // Fallback if nav structure changed: just scroll the page header into view
+                    document.getElementById('customersPage')?.scrollIntoView({ behavior: 'smooth' });
                 }
             };
+
+            document.getElementById('backupBannerDownload').onclick = () => goToCustomerTab('customerBackupBtn');
+            // Hide the cleanup option on the banner — admin should do cleanup from
+            // Customer tab AFTER downloading, where the flow is guarded by the
+            // backup-first reveal pattern.
+            const bannerCleanup = document.getElementById('backupBannerCleanup');
+            if (bannerCleanup) bannerCleanup.style.display = 'none';
 
             document.getElementById('backupBannerDismiss').onclick = () => {
                 const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -2000,36 +2008,85 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     }
 
-    document.getElementById('exportBtn').addEventListener('click', () => doExport('full'));
-    document.getElementById('exportSimpleBtn').addEventListener('click', () => doExport('simple'));
+    // ============================================
+    // BACKUP & CLEANUP — moved here from Messages page per user request.
+    // Workflow: Download backup → Cleanup button reveals → Confirm → batched delete.
+    // ============================================
+    const customerBackupBtn = document.getElementById('customerBackupBtn');
+    const customerCleanupBtn = document.getElementById('customerCleanupBtn');
 
-    // Export vCard (.vcf) — direct phone contact import
-    document.getElementById('exportVcfBtn').addEventListener('click', async () => {
-        try {
-            const filterParams = getExportParams();
-            const res = await fetch(`${API_URL}/admin/customers/export/vcf?${filterParams.replace(/^&/, '')}`, {
-                credentials: 'include'
-            });
-
-            if (!res.ok) {
-                const err = await res.json().catch(() => null);
-                alert(err && err.message ? err.message : 'Gagal export vCard (status ' + res.status + ')');
-                return;
+    if (customerBackupBtn) {
+        customerBackupBtn.addEventListener('click', async () => {
+            const origText = customerBackupBtn.textContent;
+            customerBackupBtn.disabled = true;
+            customerBackupBtn.textContent = '⏳ Membuat backup...';
+            try {
+                const response = await fetch(`${API_URL}/admin/backup/full`, { credentials: 'include' });
+                if (!response.ok) {
+                    const errJson = await response.json().catch(() => null);
+                    throw new Error(errJson?.message || `Server returned ${response.status}`);
+                }
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `cahaya-phone-full-backup-${toWITADate(new Date())}.csv`;
+                link.click();
+                URL.revokeObjectURL(url);
+                alert('✅ Backup berhasil di-download.\n\nSimpan file ini di Google Drive / external storage.\n\nSetelah pastikan file bisa dibuka di Excel, klik "Cleanup Data Lama" untuk hapus log >14-30 hari.');
+                // Reveal the cleanup button now that backup is in user's hands
+                customerCleanupBtn.style.display = 'inline-flex';
+            } catch (e) {
+                console.error('Backup error:', e);
+                alert('❌ Gagal download backup: ' + e.message);
+            } finally {
+                customerBackupBtn.disabled = false;
+                customerBackupBtn.textContent = origText;
             }
+        });
+    }
 
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            const today = toWITADate(new Date());
-            link.href = url;
-            link.download = `cahaya_phone_contacts_${today}.vcf`;
-            link.click();
-            URL.revokeObjectURL(url);
-        } catch (e) {
-            console.error('Export vCard error:', e);
-            alert('Gagal export vCard. Pastikan koneksi ke server OK.');
-        }
-    });
+    if (customerCleanupBtn) {
+        customerCleanupBtn.addEventListener('click', async () => {
+            if (!confirm(
+                'PERINGATAN: data log lama akan dihapus permanen.\n\n' +
+                'Yang akan DIHAPUS:\n' +
+                '• Chat messages > 30 hari\n' +
+                '• WA logs SENT > 14 hari, FAILED > 30 hari\n' +
+                '• Broadcast jobs > 14 hari\n' +
+                '• Audit logs > 90 hari\n\n' +
+                'Yang AMAN (TIDAK dihapus):\n' +
+                '• Data customer\n' +
+                '• Riwayat pembelian (purchases)\n' +
+                '• Birthday greeting log\n\n' +
+                'Sudah pastikan backup CSV ter-download? Lanjutkan cleanup?'
+            )) return;
+
+            const origText = customerCleanupBtn.textContent;
+            customerCleanupBtn.disabled = true;
+            customerCleanupBtn.textContent = '⏳ Membersihkan...';
+            try {
+                const result = await apiCall('/admin/cleanup/delete', { method: 'POST' });
+                if (result && result.success) {
+                    const d = result.deleted;
+                    alert(`✅ ${d.total} data lama berhasil dihapus.\n\n• Chat lama: ${d.messages}\n• WA logs: ${d.waMessageLogs}\n• Broadcast: ${d.broadcastJobs} job + ${d.broadcastRecipients} penerima\n• Audit: ${d.auditLogs}\n• Reset tokens: ${d.expiredTokens}`);
+                    customerCleanupBtn.style.display = 'none';
+                    // Refresh customer list (counts may have shifted) + dismiss banner if present
+                    if (typeof loadCustomers === 'function') loadCustomers();
+                    if (typeof loadResourceUsage === 'function') loadResourceUsage();
+                    const banner = document.getElementById('backupBanner');
+                    if (banner) banner.style.display = 'none';
+                } else {
+                    alert('❌ Cleanup gagal: ' + (result?.message || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('❌ Cleanup error: ' + e.message);
+            } finally {
+                customerCleanupBtn.disabled = false;
+                customerCleanupBtn.textContent = origText;
+            }
+        });
+    }
 
     // ============================================
     // WA CONNECT

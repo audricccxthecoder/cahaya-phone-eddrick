@@ -2303,12 +2303,26 @@ exports.fullBackup = async (req, res) => {
     try {
         // Pull every important table. Sensitive columns (password hashes, tokens)
         // are excluded explicitly — backup is for data recovery, not credential dump.
+        // `last_purchase_at` is a computed value (MAX(created_at) from purchases),
+        // NOT a column on customers. Compute it inline via LEFT JOIN so the backup
+        // still includes that data without breaking on the missing column.
         const { rows: customers } = await db.query(
-            `SELECT id, nama_lengkap, whatsapp, source, status, tipe, tanggal_lahir, alamat,
-                    merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, tahu_dari,
-                    opted_in, catatan, wa_sent, last_purchase_at, last_incoming_message_at,
-                    created_at, updated_at
-             FROM customers ORDER BY id ASC`
+            `SELECT c.id, c.nama_lengkap, c.whatsapp, c.source, c.status, c.tipe,
+                    c.tanggal_lahir, c.alamat, c.merk_unit, c.tipe_unit, c.harga, c.qty,
+                    c.nama_sales, c.metode_pembayaran, c.tahu_dari, c.opted_in, c.catatan,
+                    c.wa_sent, c.last_incoming_message_at, c.created_at, c.updated_at,
+                    p.last_purchase_at,
+                    COALESCE(p.total_spent, 0) AS total_spent,
+                    COALESCE(p.purchase_count, 0) AS purchase_count
+             FROM customers c
+             LEFT JOIN (
+                 SELECT customer_id,
+                        MAX(created_at) AS last_purchase_at,
+                        SUM(COALESCE(harga, 0) * COALESCE(qty, 1)) AS total_spent,
+                        COUNT(*) AS purchase_count
+                 FROM purchases GROUP BY customer_id
+             ) p ON p.customer_id = c.id
+             ORDER BY c.id ASC`
         );
 
         const { rows: purchases } = await db.query(
@@ -2354,7 +2368,7 @@ exports.fullBackup = async (req, res) => {
         let csv = `# CAHAYA PHONE FULL BACKUP\n# Generated: ${now}\n# Customers: ${customers.length} | Purchases: ${purchases.length} | Messages (last 6mo): ${messages.length}\n# Broadcasts: ${broadcastJobs.length} | Birthdays: ${birthdayGreetings.length} | Admins: ${admins.length}\n\n`;
 
         csv += '=== CUSTOMERS ===\n';
-        csv += rowsToCsv(customers, ['id', 'nama_lengkap', 'whatsapp', 'source', 'status', 'tipe', 'tanggal_lahir', 'alamat', 'merk_unit', 'tipe_unit', 'harga', 'qty', 'nama_sales', 'metode_pembayaran', 'tahu_dari', 'opted_in', 'catatan', 'wa_sent', 'last_purchase_at', 'last_incoming_message_at', 'created_at', 'updated_at']);
+        csv += rowsToCsv(customers, ['id', 'nama_lengkap', 'whatsapp', 'source', 'status', 'tipe', 'tanggal_lahir', 'alamat', 'merk_unit', 'tipe_unit', 'harga', 'qty', 'nama_sales', 'metode_pembayaran', 'tahu_dari', 'opted_in', 'catatan', 'wa_sent', 'purchase_count', 'total_spent', 'last_purchase_at', 'last_incoming_message_at', 'created_at', 'updated_at']);
 
         csv += '\n=== PURCHASES ===\n';
         csv += rowsToCsv(purchases, ['id', 'customer_id', 'merk_unit', 'tipe_unit', 'harga', 'qty', 'nama_sales', 'metode_pembayaran', 'source', 'created_at']);
