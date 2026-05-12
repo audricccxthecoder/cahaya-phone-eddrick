@@ -754,82 +754,81 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // DASHBOARD
     // ============================================
 
-    // Monthly backup reminder banner. Shows when last_backup_at > 30 days OR never.
-    // Workflow: admin clicks Download → CSV downloads + timestamp saved server-side
-    // → "Cleanup data lama" button revealed → admin confirms → batched delete runs.
+    // End-of-month backup reminder banner. Backend computes showBanner =
+    // (today is last day of month) AND (haven't cleaned this month) AND
+    // (there is new data since last cleanup). So the banner only appears
+    // on the natural "saatnya" day, and stops appearing once cleanup is done.
     async function loadBackupBanner() {
         try {
             const result = await apiCall('/admin/backup/status');
             if (!result || !result.success) return;
             const data = result.data;
-            if (!data.needsBackup) return;
+            // Always sync the Customer-tab backup button state, regardless of banner.
+            syncBackupButtonState(data);
 
-            const today = new Date().toISOString().slice(0, 10);
-            const dismissedUntil = localStorage.getItem('backupBannerDismissedUntil');
+            if (!data.showBanner) return;
+
+            const dismissedKey = 'backupBannerDismissedUntil';
+            const dismissedUntil = localStorage.getItem(dismissedKey);
             if (dismissedUntil && new Date(dismissedUntil) > new Date()) return;
 
             const banner = document.getElementById('backupBanner');
             if (!banner) return;
 
-            const palette = {
-                info:    { bg: '#EFF6FF', border: '#BFDBFE', color: '#1E40AF' },
-                warning: { bg: '#FEF3C7', border: '#FDE68A', color: '#92400E' },
-                urgent:  { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B' }
-            }[data.severity] || { bg: '#F3F4F6', border: '#D1D5DB', color: '#374151' };
-
-            banner.style.background = palette.bg;
-            banner.style.borderColor = palette.border;
-            banner.style.color = palette.color;
+            // End-of-month = warning palette (amber)
+            banner.style.background = '#FEF3C7';
+            banner.style.borderColor = '#FDE68A';
+            banner.style.color = '#92400E';
 
             const titleEl = document.getElementById('backupBannerTitle');
             const msgEl = document.getElementById('backupBannerMessage');
-            if (data.daysSinceBackup === null) {
-                titleEl.textContent = 'Belum pernah backup data';
-                msgEl.textContent = 'Download backup lengkap dulu untuk arsip. Data customer, riwayat pembelian, chat — semuanya dalam 1 file CSV.';
-            } else if (data.severity === 'urgent') {
-                titleEl.textContent = `${data.daysSinceBackup} hari sejak backup terakhir`;
-                msgEl.textContent = 'Sudah lewat 45 hari! Segera download backup lengkap + cleanup data lama biar storage tetap aman.';
-            } else {
-                titleEl.textContent = `${data.daysSinceBackup} hari sejak backup terakhir`;
-                msgEl.textContent = 'Saatnya download backup bulanan. Setelah download, jalankan cleanup data lama supaya storage Supabase gak menumpuk.';
-            }
+            titleEl.textContent = `Saatnya backup + cleanup akhir bulan (tgl ${data.todayDayOfMonth})`;
+            msgEl.textContent = 'Download CSV lengkap dulu untuk arsip → lalu cleanup data log. Customer & riwayat pembelian TIDAK dihapus, hanya chat log & WA log (yang juga tersimpan di HP).';
 
             banner.style.display = 'block';
 
-            // Wire buttons. Backup + Cleanup live on the Customer tab now —
-            // banner just routes the user there and (for backup) auto-clicks the button.
             const goToCustomerTab = (autoClickBtnId) => {
-                const navLink = document.querySelector('a.nav-item[data-page="customers"]')
-                              || document.querySelector('a.nav-item[href*="customers"]');
+                const navLink = document.querySelector('a.nav-item[data-page="customers"]');
                 if (navLink) {
                     navLink.click();
-                    // Small delay so the page swap completes before we trigger the button
                     setTimeout(() => {
-                        if (autoClickBtnId) {
-                            const btn = document.getElementById(autoClickBtnId);
-                            if (btn) btn.click();
-                        }
+                        if (autoClickBtnId) document.getElementById(autoClickBtnId)?.click();
                     }, 250);
                 } else {
-                    // Fallback if nav structure changed: just scroll the page header into view
                     document.getElementById('customersPage')?.scrollIntoView({ behavior: 'smooth' });
                 }
             };
-
             document.getElementById('backupBannerDownload').onclick = () => goToCustomerTab('customerBackupBtn');
-            // Hide the cleanup option on the banner — admin should do cleanup from
-            // Customer tab AFTER downloading, where the flow is guarded by the
-            // backup-first reveal pattern.
             const bannerCleanup = document.getElementById('backupBannerCleanup');
             if (bannerCleanup) bannerCleanup.style.display = 'none';
 
             document.getElementById('backupBannerDismiss').onclick = () => {
                 const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-                localStorage.setItem('backupBannerDismissedUntil', sevenDaysLater.toISOString());
+                localStorage.setItem(dismissedKey, sevenDaysLater.toISOString());
                 banner.style.display = 'none';
             };
         } catch (e) {
             console.warn('loadBackupBanner failed:', e.message);
+        }
+    }
+
+    // Sync the Customer-tab backup button: enabled when there's new activity
+    // since the last monthly cleanup, otherwise disabled with an explanatory
+    // tooltip. Called from loadBackupBanner() so the button stays accurate
+    // whenever the dashboard loads.
+    function syncBackupButtonState(statusData) {
+        const btn = document.getElementById('customerBackupBtn');
+        if (!btn) return;
+        if (statusData.canBackup === false) {
+            btn.disabled = true;
+            btn.title = 'Tunggu data baru masuk. Backup baru bisa dilakukan setelah cleanup terakhir + ada aktivitas baru.';
+            btn.style.opacity = '0.5';
+            btn.style.cursor = 'not-allowed';
+        } else {
+            btn.disabled = false;
+            btn.title = 'Download SEMUA data (customer + purchases + dll) sebagai 1 CSV';
+            btn.style.opacity = '';
+            btn.style.cursor = '';
         }
     }
 
@@ -1132,7 +1131,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             else if (page === 'birthday') loadBirthdayPage();
             else if (page === 'waconnect') { loadWAStatus(); loadWAAutoReply(); loadFailedWA(); }
             else if (page === 'broadcast') { loadDailySentCount(); const s = await apiCall('/admin/broadcast/status'); if (s && s.status) renderBroadcastStatus(s.status); }
-            else if (page === 'messages') { await loadMessages(); loadCleanupStatus(); loadResourceUsage(); }
+            else if (page === 'messages') { await loadMessages(); loadCleanupStatus(); }
         } catch (e) {
             console.error('Refresh error:', e);
         }
@@ -2049,33 +2048,41 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     if (customerCleanupBtn) {
         customerCleanupBtn.addEventListener('click', async () => {
             if (!confirm(
-                'PERINGATAN: data log lama akan dihapus permanen.\n\n' +
-                'Yang akan DIHAPUS:\n' +
-                '• Chat messages > 30 hari\n' +
-                '• WA logs SENT > 14 hari, FAILED > 30 hari\n' +
-                '• Broadcast jobs > 14 hari\n' +
-                '• Audit logs > 90 hari\n\n' +
+                'PERINGATAN: SEMUA log bulanan akan dihapus permanen.\n\n' +
+                'Yang akan DIHAPUS (regardless of age):\n' +
+                '• Semua chat messages\n' +
+                '• Semua WA logs (SENT + FAILED + QUEUED)\n' +
+                '• Semua broadcast jobs + recipients\n' +
+                '• Semua audit logs\n' +
+                '• Daily stats + reset tokens\n\n' +
                 'Yang AMAN (TIDAK dihapus):\n' +
-                '• Data customer\n' +
+                '• Data customer (semua nama/HP/alamat tetap)\n' +
                 '• Riwayat pembelian (purchases)\n' +
-                '• Birthday greeting log\n\n' +
-                'Sudah pastikan backup CSV ter-download? Lanjutkan cleanup?'
+                '• Birthday greeting log (per-tahun idempotency)\n' +
+                '• Admin accounts + Google tokens + app settings\n\n' +
+                'Sudah PASTIKAN backup CSV ter-download? Lanjutkan cleanup bulanan?'
             )) return;
 
             const origText = customerCleanupBtn.textContent;
             customerCleanupBtn.disabled = true;
             customerCleanupBtn.textContent = '⏳ Membersihkan...';
             try {
-                const result = await apiCall('/admin/cleanup/delete', { method: 'POST' });
+                const result = await apiCall('/admin/cleanup/monthly', { method: 'POST' });
                 if (result && result.success) {
                     const d = result.deleted;
-                    alert(`✅ ${d.total} data lama berhasil dihapus.\n\n• Chat lama: ${d.messages}\n• WA logs: ${d.waMessageLogs}\n• Broadcast: ${d.broadcastJobs} job + ${d.broadcastRecipients} penerima\n• Audit: ${d.auditLogs}\n• Reset tokens: ${d.expiredTokens}`);
+                    alert(`✅ ${d.total} data berhasil dihapus.\n\n` +
+                          `• Chat messages: ${d.messages}\n` +
+                          `• WA logs: ${d.waMessageLogs}\n` +
+                          `• Broadcast: ${d.broadcastJobs} job + ${d.broadcastRecipients} penerima\n` +
+                          `• Audit logs: ${d.auditLogs}\n` +
+                          `• Daily stats: ${d.waDailyStats}\n` +
+                          `• Reset tokens: ${d.expiredTokens}`);
                     customerCleanupBtn.style.display = 'none';
-                    // Refresh customer list (counts may have shifted) + dismiss banner if present
                     if (typeof loadCustomers === 'function') loadCustomers();
-                    if (typeof loadResourceUsage === 'function') loadResourceUsage();
                     const banner = document.getElementById('backupBanner');
                     if (banner) banner.style.display = 'none';
+                    // Refresh status so backup button disables until new data arrives
+                    loadBackupBanner();
                 } else {
                     alert('❌ Cleanup gagal: ' + (result?.message || 'Unknown error'));
                 }

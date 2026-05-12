@@ -2152,17 +2152,80 @@ async function performCleanup() {
 }
 
 /**
- * Monthly auto-cleanup cron entry point. Idempotent — safe to call multiple
- * times; only deletes data older than CLEANUP_DAYS so re-running same day
- * is a no-op.
+ * Aggressive monthly cleanup — wipes ALL logs/messages/broadcasts/audit
+ * regardless of age. Keeps customers, purchases, birthday_greetings,
+ * app_settings, admins, google_tokens. Intended to be triggered:
+ *  - Manually by admin at end of each month (after backup CSV downloaded)
+ *  - Automatically by cron on the 1st as a safety net for forgotten months
+ *
+ * Why aggressive (vs age-based): user's WA logs are also visible on their
+ * phone's WA Business app, so DB copies are redundant for shop continuity.
+ * Wiping monthly keeps Supabase free-tier comfortable indefinitely.
+ */
+async function performMonthlyAggressiveCleanup() {
+    const tokenDeleted = (await db.query(
+        `DELETE FROM admin_reset_tokens`
+    )).rowCount;
+
+    const recDeleted = await batchedDelete(
+        `DELETE FROM broadcast_recipients
+         WHERE id IN (SELECT id FROM broadcast_recipients LIMIT \${batchSize})`,
+        []
+    );
+
+    const jobDeleted = await batchedDelete(
+        `DELETE FROM broadcast_jobs
+         WHERE id IN (SELECT id FROM broadcast_jobs WHERE status IN ('completed','stopped') LIMIT \${batchSize})`,
+        []
+    );
+
+    const msgDeleted = await batchedDelete(
+        `DELETE FROM messages WHERE id IN (SELECT id FROM messages LIMIT \${batchSize})`,
+        []
+    );
+
+    const waLogDeleted = await batchedDelete(
+        `DELETE FROM whatsapp_logs WHERE id IN (SELECT id FROM whatsapp_logs LIMIT \${batchSize})`,
+        []
+    );
+
+    const waDailyDeleted = (await db.query(`DELETE FROM wa_daily_stats`)).rowCount;
+
+    const auditDeleted = await batchedDelete(
+        `DELETE FROM admin_activity_logs WHERE id IN (SELECT id FROM admin_activity_logs LIMIT \${batchSize})`,
+        []
+    );
+
+    // Record timestamp so the dashboard banner & backup button can react.
+    await db.query(
+        `INSERT INTO app_settings (key, value) VALUES ('last_monthly_cleanup_at', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+        [new Date().toISOString()]
+    );
+
+    const total = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted + auditDeleted;
+    return {
+        messages: msgDeleted,
+        broadcastJobs: jobDeleted,
+        broadcastRecipients: recDeleted,
+        expiredTokens: tokenDeleted,
+        waMessageLogs: waLogDeleted,
+        waDailyStats: waDailyDeleted,
+        auditLogs: auditDeleted,
+        total
+    };
+}
+
+/**
+ * Monthly auto-cleanup cron entry point. Idempotent — running it twice
+ * on the same day just deletes the (now-empty) tables again, no-op.
  */
 exports.cronMonthlyCleanup = async function() {
-    console.log('[Cron] Running monthly auto-cleanup...');
+    console.log('[Cron] Running monthly aggressive cleanup...');
     try {
-        const result = await performCleanup();
-        console.log(`[Cron] Auto-cleanup done: ${result.total} rows removed`,
+        const result = await performMonthlyAggressiveCleanup();
+        console.log(`[Cron] Cleanup done: ${result.total} rows removed`,
             `(msg=${result.messages}, wa_log=${result.waMessageLogs}, audit=${result.auditLogs})`);
-        // Log to audit trail so owner can see it happened
         await db.query(
             `INSERT INTO admin_activity_logs (admin_id, admin_username, action, detail, ip_address)
              VALUES (NULL, 'system-cron', 'auto_cleanup', $1, 'localhost')`,
@@ -2170,6 +2233,26 @@ exports.cronMonthlyCleanup = async function() {
         ).catch(() => {});
     } catch (err) {
         console.error('[Cron] Auto-cleanup failed:', err.message);
+    }
+};
+
+/**
+ * Monthly cleanup HTTP endpoint (manual trigger from Customer tab).
+ * POST /api/admin/cleanup/monthly
+ */
+exports.monthlyCleanup = async function(req, res) {
+    try {
+        const result = await performMonthlyAggressiveCleanup();
+        await db.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, detail, ip_address)
+             VALUES ($1, $2, 'monthly_cleanup', $3, $4)`,
+            [req.admin?.id || null, req.admin?.username || 'unknown',
+             `total=${result.total}`, req.ip]
+        ).catch(() => {});
+        res.json({ success: true, deleted: result });
+    } catch (err) {
+        console.error('❌ Monthly cleanup error:', err);
+        res.status(500).json({ success: false, message: err.message });
     }
 };
 
@@ -2512,35 +2595,86 @@ exports.fullBackup = async (req, res) => {
 };
 
 /**
- * GET /api/admin/backup/status — used by dashboard banner to remind owner to back up
- * once a month. Returns days since last backup and a recommendation flag.
+ * GET /api/admin/backup/status — drives the end-of-month banner + the
+ * backup button's disabled state. Returns:
+ *  - lastBackupAt, lastCleanupAt   (when those last ran)
+ *  - isEndOfMonth                  (today is last day of month, WITA)
+ *  - cleanedThisMonth              (already cleaned in current WITA month)
+ *  - newDataSinceCleanup           (any activity since last cleanup)
+ *  - showBanner                    (= isEndOfMonth && !cleanedThisMonth && newDataSinceCleanup)
+ *  - canBackup                     (= newDataSinceCleanup OR never cleaned)
+ *
+ * Frontend uses showBanner to render the reminder, and canBackup to enable/
+ * disable the Download Full Backup button. "Tombol gak bisa dipencet sampai
+ * ada data baru" maps to canBackup === false.
  */
 exports.getBackupStatus = async (req, res) => {
     try {
-        const { rows } = await db.query(
-            `SELECT value FROM app_settings WHERE key = 'last_backup_at' LIMIT 1`
+        const { rows: settingRows } = await db.query(
+            `SELECT key, value FROM app_settings WHERE key IN ('last_backup_at', 'last_monthly_cleanup_at')`
         );
-        const lastBackup = rows[0]?.value ? new Date(rows[0].value) : null;
-        const daysSince = lastBackup
+        const map = Object.fromEntries(settingRows.map(r => [r.key, r.value]));
+        const lastBackup = map.last_backup_at ? new Date(map.last_backup_at) : null;
+        const lastCleanup = map.last_monthly_cleanup_at ? new Date(map.last_monthly_cleanup_at) : null;
+
+        // WITA today's date pieces
+        const wita = new Date(Date.now() + 8 * 60 * 60 * 1000);
+        const dy = wita.getUTCDate();
+        const dm = wita.getUTCMonth();
+        const dyear = wita.getUTCFullYear();
+        const lastDayOfMonth = new Date(dyear, dm + 1, 0).getDate();
+        const isEndOfMonth = dy >= lastDayOfMonth;
+
+        // Has cleanup already happened this WITA month?
+        let cleanedThisMonth = false;
+        if (lastCleanup) {
+            const cleanupWita = new Date(lastCleanup.getTime() + 8 * 60 * 60 * 1000);
+            cleanedThisMonth = (cleanupWita.getUTCMonth() === dm && cleanupWita.getUTCFullYear() === dyear);
+        }
+
+        // "newDataSinceCleanup": any new customer / message / wa_log row created
+        // after the last cleanup timestamp. If never cleaned, anything counts as new.
+        let newDataSinceCleanup = true;
+        if (lastCleanup) {
+            const sinceParam = lastCleanup.toISOString();
+            // Cheap EXISTS query — return true if ANY of the three has fresh rows.
+            // Each subquery short-circuits on first match thanks to LIMIT 1.
+            try {
+                const { rows } = await db.query(
+                    `SELECT
+                        EXISTS (SELECT 1 FROM customers WHERE created_at > $1 LIMIT 1)
+                     OR EXISTS (SELECT 1 FROM messages WHERE sent_at > $1 LIMIT 1)
+                     OR EXISTS (SELECT 1 FROM whatsapp_logs WHERE created_at > $1 LIMIT 1)
+                        AS has_new`,
+                    [sinceParam]
+                );
+                newDataSinceCleanup = !!rows[0]?.has_new;
+            } catch (e) {
+                console.warn('[BackupStatus] new-data probe failed:', e.message);
+                newDataSinceCleanup = true;  // fail-safe: assume new data so button still works
+            }
+        }
+
+        const daysSinceBackup = lastBackup
             ? Math.floor((Date.now() - lastBackup.getTime()) / (1000 * 60 * 60 * 24))
             : null;
 
-        // Banner shows when:
-        //  - never backed up, OR
-        //  - last backup >30 days ago
-        const needsBackup = !lastBackup || daysSince >= 30;
-        const severity = !lastBackup ? 'info'
-                       : daysSince >= 45 ? 'urgent'
-                       : daysSince >= 30 ? 'warning'
-                       : 'none';
+        const showBanner = isEndOfMonth && !cleanedThisMonth && newDataSinceCleanup;
+        const canBackup = newDataSinceCleanup;
 
         res.json({
             success: true,
             data: {
                 lastBackupAt: lastBackup ? lastBackup.toISOString() : null,
-                daysSinceBackup: daysSince,
-                needsBackup,
-                severity
+                lastCleanupAt: lastCleanup ? lastCleanup.toISOString() : null,
+                daysSinceBackup,
+                isEndOfMonth,
+                cleanedThisMonth,
+                newDataSinceCleanup,
+                canBackup,
+                showBanner,
+                lastDayOfMonth,
+                todayDayOfMonth: dy
             }
         });
     } catch (err) {

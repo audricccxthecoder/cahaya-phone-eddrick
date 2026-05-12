@@ -170,6 +170,8 @@ router.get('/admin/birthday/history', authMiddleware, birthdayController.getHist
 router.get('/admin/cleanup/status', authMiddleware, adminController.getCleanupStatus);
 router.get('/admin/cleanup/export', authMiddleware, adminController.exportOldLogs);
 router.post('/admin/cleanup/delete', authMiddleware, auditLog('cleanup_delete'), adminController.deleteOldLogs);
+// Monthly aggressive cleanup — wipes ALL logs, keeps customers/purchases/birthday
+router.post('/admin/cleanup/monthly', authMiddleware, auditLog('monthly_cleanup'), adminController.monthlyCleanup);
 
 // Full backup + resource monitoring
 router.get('/admin/backup/full', authMiddleware, auditLog('full_backup'), adminController.fullBackup);
