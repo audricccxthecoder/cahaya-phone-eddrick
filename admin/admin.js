@@ -1143,11 +1143,23 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (isBelanja) {
                 const produk = customer.merk_unit && customer.tipe_unit
                     ? `${esc(customer.merk_unit)} ${esc(customer.tipe_unit)}` : '-';
-                const harga = customer.harga
-                    ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(customer.harga) : '-';
+                // For repeat buyers, show CUMULATIVE total (sum of all purchases) — makes it
+                // obvious that historical data IS preserved. Single-purchase customers see
+                // the regular latest-price formatting.
+                const totalSpent = Number(customer.total_spent) || 0;
+                const latestHarga = Number(customer.harga) || 0;
+                const fmt = (n) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
+                let hargaCell = '-';
+                if (pCount > 1 && totalSpent > 0) {
+                    // Show total bold, with latest as a smaller subtext
+                    hargaCell = `<div style="font-weight:600;color:#B91C1C;">${fmt(totalSpent)}</div>` +
+                        `<div style="font-size:10px;color:#8C8078;">${pCount} transaksi · terakhir ${fmt(latestHarga)}</div>`;
+                } else if (latestHarga > 0) {
+                    hargaCell = fmt(latestHarga);
+                }
                 html += `<td>${esc(customer.nama_sales || '-')}</td>
                     <td>${produk}</td>
-                    <td>${harga}</td>
+                    <td>${hargaCell}</td>
                     <td>${esc(customer.metode_pembayaran || '-')}</td>`;
             } else {
                 // Catatan editable for Chat Only — value goes into an attribute, so esc() handles quote/lt/gt
@@ -1648,7 +1660,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <button class="btn-small" style="font-size:13px;padding:8px 16px;background:rgba(220,38,38,0.08);color:#DC2626;border:1px solid rgba(220,38,38,0.2);" onclick="deletePermanent()">Hapus Permanen</button>
                     <button class="btn-small" style="font-size:13px;padding:8px 16px;" onclick="exportLogsOnly()">Export CSV Saja</button>
                 </div>
-            ` : `<p class="muted" style="margin:0;">Tidak ada data lama yang perlu dibersihkan.</p>`}
+            ` : `<p class="muted" style="margin:0 0 6px;">Tidak ada data lama yang perlu dibersihkan.</p>
+                 <p style="font-size:11px;color:#8C8078;margin:0;">ℹ️ Cleanup hanya hapus pesan chat & broadcast yang sudah <strong>lebih dari ${d.cleanupDays} hari</strong>. Chat log yang ditampilkan di bawah ini masih recent, akan otomatis masuk antrian cleanup setelah berusia ${d.cleanupDays} hari.</p>`}
         `;
 
         // Update banner di dashboard

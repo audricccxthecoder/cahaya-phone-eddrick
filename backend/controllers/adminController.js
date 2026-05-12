@@ -384,16 +384,26 @@ exports.getPipelineMonthly = async (req, res) => {
  */
 exports.getCustomers = async (req, res) => {
     try {
+        // Customers table = latest snapshot per row. ALL historical purchases live in
+        // `purchases` table — we aggregate count + total_spent so the dashboard list
+        // shows the full picture (latest item shown, plus "5 transaksi · Rp 32jt")
+        // instead of looking like data only saves the latest purchase.
         const { rows: customers } = await db.query(
             `SELECT c.id, c.nama_lengkap, c.nama_sales, c.merk_unit, c.tipe_unit,
                 c.harga, c.qty, c.whatsapp, c.metode_pembayaran,
                 c.source, c.status, c.tipe, c.created_at, c.catatan, c.wa_sent,
                 c.last_incoming_message_at,
                 COALESCE(p.purchase_count, 0)::int as purchase_count,
+                COALESCE(p.total_spent, 0)::bigint as total_spent,
+                COALESCE(p.total_qty, 0)::int as total_qty,
                 p.last_purchase_at
             FROM customers c
             LEFT JOIN (
-                SELECT customer_id, COUNT(*) as purchase_count, MAX(created_at) as last_purchase_at
+                SELECT customer_id,
+                       COUNT(*) as purchase_count,
+                       SUM(COALESCE(harga, 0) * COALESCE(qty, 1)) as total_spent,
+                       SUM(COALESCE(qty, 1)) as total_qty,
+                       MAX(created_at) as last_purchase_at
                 FROM purchases GROUP BY customer_id
             ) p ON p.customer_id = c.id
             ORDER BY COALESCE(p.last_purchase_at, c.last_incoming_message_at, c.created_at) DESC`
@@ -2316,57 +2326,69 @@ exports.fullBackup = async (req, res) => {
  * GET /api/admin/resource-usage
  */
 exports.getResourceUsage = async (req, res) => {
-    try {
-        // Per-table row counts
-        const { rows: counts } = await db.query(`
-            SELECT 'customers' AS table_name, COUNT(*)::int AS rows FROM customers UNION ALL
-            SELECT 'messages', COUNT(*)::int FROM messages UNION ALL
-            SELECT 'whatsapp_logs', COUNT(*)::int FROM whatsapp_logs UNION ALL
-            SELECT 'broadcast_recipients', COUNT(*)::int FROM broadcast_recipients UNION ALL
-            SELECT 'broadcast_jobs', COUNT(*)::int FROM broadcast_jobs UNION ALL
-            SELECT 'purchases', COUNT(*)::int FROM purchases UNION ALL
-            SELECT 'admin_activity_logs', COUNT(*)::int FROM admin_activity_logs UNION ALL
-            SELECT 'birthday_greetings', COUNT(*)::int FROM birthday_greetings
-        `);
+    // Defensive: query each table independently so a missing/permission-denied
+    // table doesn't blow up the whole response. The previous version's UNION ALL
+    // would fail entirely if ANY one query errored — that's why the frontend
+    // was stuck on "Memuat info storage..." indefinitely.
+    const tables = [
+        'customers', 'messages', 'whatsapp_logs', 'broadcast_recipients',
+        'broadcast_jobs', 'purchases', 'admin_activity_logs', 'birthday_greetings'
+    ];
+    const counts = [];
+    let totalRowEstimate = 0;
 
-        // Approximate DB size (Postgres reports per-table size)
-        let dbSizeBytes = 0;
+    for (const t of tables) {
         try {
-            const { rows: sizeRows } = await db.query(`
-                SELECT pg_database_size(current_database())::bigint AS bytes
-            `);
-            dbSizeBytes = Number(sizeRows[0].bytes);
-        } catch (_) {
-            // Permission errors on some managed Postgres — fall back to row-count estimate
-            const estimated = counts.reduce((sum, t) => sum + (t.rows * 600), 0);  // ~600 bytes/row rough avg
-            dbSizeBytes = estimated;
-        }
-
-        // Find oldest message to gauge how soon cleanup pays off
-        const { rows: [oldestMsg] } = await db.query(
-            `SELECT MIN(sent_at) AS oldest FROM messages`
-        );
-
-        const sizeMB = (dbSizeBytes / (1024 * 1024)).toFixed(2);
-        const supabaseFreeLimit = 500;          // MB
-        const pctUsed = ((Number(sizeMB) / supabaseFreeLimit) * 100).toFixed(1);
-
-        res.json({
-            success: true,
-            data: {
-                tableCounts: counts,
-                dbSizeBytes,
-                dbSizeMB: Number(sizeMB),
-                supabaseFreeLimitMB: supabaseFreeLimit,
-                pctOfFreeTier: Number(pctUsed),
-                oldestMessageDate: oldestMsg?.oldest || null,
-                warning: Number(pctUsed) > 70 ? 'Database nearing free tier limit. Run cleanup or backup soon.' : null
+            // to_regclass returns NULL if table doesn't exist (no error thrown).
+            const { rows } = await db.query(
+                `SELECT CASE WHEN to_regclass($1) IS NOT NULL
+                    THEN (SELECT COUNT(*) FROM ${t})::int
+                    ELSE NULL END AS rows`,
+                [t]
+            );
+            const rowCount = rows[0]?.rows;
+            if (rowCount !== null && rowCount !== undefined) {
+                counts.push({ table_name: t, rows: rowCount });
+                totalRowEstimate += rowCount;
             }
-        });
-    } catch (err) {
-        console.error('❌ Resource usage error:', err);
-        res.status(500).json({ success: false, message: 'Gagal cek usage' });
+        } catch (err) {
+            console.warn(`[Resource] Could not count ${t}: ${err.message}`);
+        }
     }
+
+    // pg_database_size sometimes blocked on managed Postgres — try, fall back to estimate.
+    let dbSizeBytes = 0;
+    try {
+        const { rows } = await db.query(
+            `SELECT pg_database_size(current_database())::bigint AS bytes`
+        );
+        dbSizeBytes = Number(rows[0].bytes);
+    } catch (_) {
+        dbSizeBytes = totalRowEstimate * 600;  // ~600 bytes/row rough average
+    }
+
+    let oldestMessageDate = null;
+    try {
+        const { rows } = await db.query(`SELECT MIN(sent_at) AS oldest FROM messages`);
+        oldestMessageDate = rows[0]?.oldest || null;
+    } catch (_) { /* ignore */ }
+
+    const sizeMB = Number((dbSizeBytes / (1024 * 1024)).toFixed(2));
+    const supabaseFreeLimit = 500;
+    const pctUsed = Number(((sizeMB / supabaseFreeLimit) * 100).toFixed(1));
+
+    res.json({
+        success: true,
+        data: {
+            tableCounts: counts,
+            dbSizeBytes,
+            dbSizeMB: sizeMB,
+            supabaseFreeLimitMB: supabaseFreeLimit,
+            pctOfFreeTier: pctUsed,
+            oldestMessageDate,
+            warning: pctUsed > 70 ? 'Database mendekati batas free tier. Backup + cleanup segera.' : null
+        }
+    });
 };
 
 /**
