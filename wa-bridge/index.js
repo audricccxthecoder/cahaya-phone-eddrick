@@ -194,6 +194,38 @@ async function retryPendingForwards() {
     if (pendingForwards.length === 0) stopRetryTimer();
 }
 
+// Wipe Baileys session with retry. EBUSY happens when sock.end() returned but
+// Baileys' async file handles in useMultiFileAuthState haven't fully released yet.
+// fs.promises.rm with maxRetries handles that automatically (Node 14.14+).
+async function wipeSession() {
+    const fsp = require('fs').promises;
+    // First, give pending async writes a chance to flush
+    await new Promise(r => setTimeout(r, 500));
+    try {
+        await fsp.rm(SESSION_DIR, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,      // retry up to 10 times
+            retryDelay: 300      // 300ms between retries (~3s max wait)
+        });
+    } catch (err) {
+        // Fallback: delete file-by-file. Survives EBUSY on individual files.
+        console.warn('[SESSION] Bulk rm failed (', err.message, ') — falling back to per-file delete');
+        try {
+            const entries = await fsp.readdir(SESSION_DIR);
+            for (const entry of entries) {
+                try { await fsp.unlink(require('path').join(SESSION_DIR, entry)); }
+                catch (e) { console.warn(`[SESSION] Could not unlink ${entry}: ${e.message}`); }
+            }
+        } catch (readErr) {
+            console.warn('[SESSION] readdir failed:', readErr.message);
+        }
+    }
+    // Recreate empty dir
+    try { await fsp.mkdir(SESSION_DIR, { recursive: true }); }
+    catch (_) { /* already exists */ }
+}
+
 async function forwardIncoming(payload) {
     if (!WEBHOOK_URL) return;
 
@@ -312,15 +344,9 @@ async function startSocket() {
                     // Session invalidated — user logged out from phone. Must scan QR again.
                     clientState.status = 'logged_out';
                     clientState.lastError = 'Logged out. Scan QR code again to reconnect.';
-                    // Wipe session so next start yields fresh QR
-                    try {
-                        const fs = require('fs');
-                        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-                        fs.mkdirSync(SESSION_DIR, { recursive: true });
-                        console.log('[SESSION] Wiped — ready for re-scan');
-                    } catch (err) {
-                        console.warn('[SESSION] Wipe failed:', err.message);
-                    }
+                    await wipeSession().catch(err =>
+                        console.warn('[SESSION] Wipe failed:', err.message));
+                    console.log('[SESSION] Wiped — ready for re-scan');
                     scheduleReconnect(0); // immediate re-init to emit new QR
                     return;
                 }
@@ -518,9 +544,12 @@ app.post('/api/disconnect', authCheck, async (req, res) => {
             try { sock.end(new Error('manual disconnect')); } catch (_) { /* ignore */ }
             sock = null;
         }
-        const fs = require('fs');
-        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-        fs.mkdirSync(SESSION_DIR, { recursive: true });
+        // wipeSession() handles EBUSY race: waits 500ms for Baileys async writes
+        // to flush, then rm with maxRetries=10. Used to fail with
+        // "EBUSY: resource busy or locked, rmdir './wa-session'" on Windows /
+        // any host where file handles linger.
+        await wipeSession();
+
         clientState.status = 'logged_out';
         clientState.info = null;
         clientState.qr = null;
@@ -530,6 +559,7 @@ app.post('/api/disconnect', authCheck, async (req, res) => {
         // Auto-start for new QR after short delay
         setTimeout(() => startSocket().catch(() => {}), 1500);
     } catch (err) {
+        console.error('[DISCONNECT] Error:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
