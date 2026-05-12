@@ -832,10 +832,13 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     }
 
-    // Railway billing reminder banner. Calls /admin/billing-status and renders
-    // a colored banner at top of dashboard when within 3 days of billing (or up
-    // to 2 days past). Severity → color: info (blue) → warning (amber) →
-    // urgent (red) → overdue (red gradient). Dismissable per-day via localStorage.
+    // Railway billing reminder banner. Only renders on H..H+2 (backend gates).
+    // Two dismiss paths:
+    //   - "Buka Railway" (link click) → treat as paid → hard-dismiss this whole
+    //     billing cycle via billingBannerPaidCycle. Banner returns next month
+    //     automatically because cycleKey changes.
+    //   - "Tutup hari ini" → per-day soft dismiss. Banner comes back tomorrow
+    //     so the owner keeps getting nudged until they actually open Railway.
     async function loadBillingBanner() {
         try {
             const result = await apiCall('/admin/billing-status');
@@ -843,15 +846,17 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             const data = result.data;
             const today = new Date().toISOString().slice(0, 10);
+
+            // Hard dismiss: user already opened Railway this cycle → assume paid
+            if (data.cycleKey && localStorage.getItem('billingBannerPaidCycle') === data.cycleKey) return;
+
             const dismissed = localStorage.getItem('billingBannerDismissedDate');
-            if (dismissed === today) return;  // user dismissed today, respect that
+            if (dismissed === today) return;  // soft dismiss for today only
 
             const banner = document.getElementById('billingBanner');
             if (!banner) return;
 
             const palette = {
-                info:    { bg: '#EFF6FF', border: '#BFDBFE', color: '#1E40AF', icon: '💳' },
-                warning: { bg: '#FEF3C7', border: '#FDE68A', color: '#92400E', icon: '⏰' },
                 urgent:  { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B', icon: '🚨' },
                 overdue: { bg: '#FEE2E2', border: '#DC2626', color: '#7F1D1D', icon: '⚠️' }
             }[data.severity] || { bg: '#F3F4F6', border: '#D1D5DB', color: '#374151', icon: '💳' };
@@ -863,6 +868,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             document.getElementById('billingTitle').textContent = esc(data.title);
             document.getElementById('billingMessage').textContent = esc(data.message);
             banner.style.display = 'block';
+
+            const openLink = document.getElementById('billingOpenRailway');
+            if (openLink && data.cycleKey) {
+                openLink.onclick = () => {
+                    localStorage.setItem('billingBannerPaidCycle', data.cycleKey);
+                    banner.style.display = 'none';
+                    // don't preventDefault — let the link open Railway in new tab
+                };
+            }
 
             document.getElementById('billingDismiss').onclick = () => {
                 localStorage.setItem('billingBannerDismissedDate', today);

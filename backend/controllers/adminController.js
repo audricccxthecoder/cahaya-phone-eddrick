@@ -1743,7 +1743,14 @@ exports.updateWASettings = async (req, res) => {
 // ============================================
 
 /**
- * Get customers with failed WA delivery
+ * Get customers with pending/failed WA delivery.
+ *
+ * Anything with wa_sent=FALSE surfaces here — including QUEUED submissions
+ * waiting for working hours and FAILED sends. Owner sees them as actionable
+ * (manual "Kirim Ulang" button available). When the worker successfully
+ * sends, wa-worker.js flips wa_sent=TRUE and the row disappears from this
+ * list automatically.
+ *
  * GET /api/admin/wa/failed
  */
 exports.getFailedWA = async (req, res) => {
@@ -2755,12 +2762,11 @@ exports.getResourceUsage = async (req, res) => {
 };
 
 /**
- * Railway billing status — used by the dashboard banner to remind owner
- * to check payment a few days before & on the billing day.
+ * Railway billing status — banner shows only on H, H+1, H+2 in WITA.
  *
- * Computes days-until-next-billing in WITA time. Severity escalates as the
- * date approaches (info → warning → urgent → overdue). The frontend renders
- * a colored banner accordingly, with a one-day dismiss option.
+ * cycleKey (YYYY-MM of the billing event) lets the frontend hard-dismiss
+ * the whole cycle when the owner clicks "Buka Railway" (treated as paid).
+ * Next cycle gets a new cycleKey, so the banner returns automatically.
  *
  * GET /api/admin/billing-status
  */
@@ -2768,31 +2774,12 @@ exports.getBillingStatus = async (req, res) => {
     try {
         const billingDay = Math.max(1, Math.min(28, Number(process.env.BILLING_DAY) || 11));
 
-        // "Now" in WITA (UTC+8)
         const nowUtcMs = Date.now();
         const wita = new Date(nowUtcMs + 8 * 60 * 60 * 1000);
         const todayDay = wita.getUTCDate();
         const todayMonth = wita.getUTCMonth();
         const todayYear = wita.getUTCFullYear();
 
-        // Next billing date: this month if not yet past, otherwise next month.
-        let nextYear = todayYear;
-        let nextMonth = todayMonth;
-        if (todayDay > billingDay) {
-            nextMonth = todayMonth + 1;
-            if (nextMonth > 11) { nextMonth = 0; nextYear++; }
-        }
-        const nextBillingDate = new Date(Date.UTC(nextYear, nextMonth, billingDay));
-
-        // Days until — based on integer day count in WITA, not millisecond math
-        // (so 23:59 vs 00:01 doesn't drift the answer by 1).
-        const todayUtcDayOnly = new Date(Date.UTC(todayYear, todayMonth, todayDay));
-        const daysUntil = Math.round((nextBillingDate - todayUtcDayOnly) / (24 * 60 * 60 * 1000));
-
-        // Overdue check: today is past billing day this month (we already advanced
-        // nextBillingDate to next month, so daysUntil is e.g. 28). Owner still
-        // wants to see a warning for ~2 days post-billing in case the auto-charge
-        // failed and grace period started.
         const daysPast = (todayDay >= billingDay && todayDay <= billingDay + 2)
             ? todayDay - billingDay
             : -1;
@@ -2809,27 +2796,19 @@ exports.getBillingStatus = async (req, res) => {
             severity = 'overdue';
             title = `${daysPast} hari lewat dari billing Railway`;
             message = `Kalau ada masalah payment, masih ada grace period ~5 hari sebelum service di-suspend. Cek dashboard Railway sekarang.`;
-        } else if (daysUntil === 1) {
-            severity = 'warning';
-            title = `Besok billing Railway`;
-            message = `Pastikan saldo kartu cukup untuk auto-charge tanggal ${billingDay}.`;
-        } else if (daysUntil === 2) {
-            severity = 'warning';
-            title = `2 hari lagi billing Railway`;
-            message = `Sempetin cek kartu yang terdaftar di Railway hari ini biar gak ada kendala.`;
-        } else if (daysUntil === 3) {
-            severity = 'info';
-            title = `3 hari lagi billing Railway`;
-            message = `H-3 menuju tanggal ${billingDay}. Top up kartu kalo perlu, supaya hosting Cahaya Phone tetap aktif.`;
         }
+
+        // cycleKey = YYYY-MM of the billing event being reminded about.
+        // Only meaningful when severity != 'none' (i.e. daysPast in [0,2]),
+        // so the billing event is always this month.
+        const cycleKey = `${todayYear}-${String(todayMonth + 1).padStart(2, '0')}`;
 
         res.json({
             success: true,
             data: {
                 billingDay,
-                daysUntilBilling: daysUntil,
                 daysPastBilling: daysPast,
-                nextBillingDate: nextBillingDate.toISOString().slice(0, 10),
+                cycleKey,
                 severity,
                 title,
                 message,
