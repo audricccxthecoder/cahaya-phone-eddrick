@@ -2025,6 +2025,80 @@ exports.exportOldLogs = async (req, res) => {
  * Delete old logs (permanent)
  * POST /api/admin/cleanup/delete
  */
+/**
+ * Internal: actually do the cleanup. Used by both the HTTP endpoint
+ * (admin manual click) and the monthly auto-cleanup cron.
+ */
+async function performCleanup() {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
+    const cutoff90 = new Date();
+    cutoff90.setDate(cutoff90.getDate() - 90);
+
+    const { rowCount: tokenDeleted } = await db.query(
+        `DELETE FROM admin_reset_tokens WHERE used = TRUE OR expires_at < NOW()`
+    );
+    const { rowCount: recDeleted } = await db.query(
+        `DELETE FROM broadcast_recipients
+         WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status IN ('completed','stopped') AND created_at < $1)`,
+        [cutoffDate]
+    );
+    const { rowCount: jobDeleted } = await db.query(
+        `DELETE FROM broadcast_jobs WHERE status IN ('completed','stopped') AND created_at < $1`,
+        [cutoffDate]
+    );
+    const { rowCount: msgDeleted } = await db.query(
+        `DELETE FROM messages WHERE sent_at < $1`,
+        [cutoffDate]
+    );
+    const { rowCount: waLogDeleted } = await db.query(
+        `DELETE FROM whatsapp_logs WHERE created_at < $1`,
+        [cutoffDate]
+    );
+    const { rowCount: waDailyDeleted } = await db.query(
+        `DELETE FROM wa_daily_stats WHERE stat_date < $1`,
+        [cutoff90]
+    );
+    const { rowCount: auditDeleted } = await db.query(
+        `DELETE FROM admin_activity_logs WHERE created_at < $1`,
+        [cutoff90]
+    );
+
+    const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted + auditDeleted;
+    return {
+        messages: msgDeleted,
+        broadcastJobs: jobDeleted,
+        broadcastRecipients: recDeleted,
+        expiredTokens: tokenDeleted,
+        waMessageLogs: waLogDeleted,
+        waDailyStats: waDailyDeleted,
+        auditLogs: auditDeleted,
+        total: totalDeleted
+    };
+}
+
+/**
+ * Monthly auto-cleanup cron entry point. Idempotent — safe to call multiple
+ * times; only deletes data older than CLEANUP_DAYS so re-running same day
+ * is a no-op.
+ */
+exports.cronMonthlyCleanup = async function() {
+    console.log('[Cron] Running monthly auto-cleanup...');
+    try {
+        const result = await performCleanup();
+        console.log(`[Cron] Auto-cleanup done: ${result.total} rows removed`,
+            `(msg=${result.messages}, wa_log=${result.waMessageLogs}, audit=${result.auditLogs})`);
+        // Log to audit trail so owner can see it happened
+        await db.query(
+            `INSERT INTO admin_activity_logs (admin_id, admin_username, action, detail, ip_address)
+             VALUES (NULL, 'system-cron', 'auto_cleanup', $1, 'localhost')`,
+            [`total=${result.total}, msg=${result.messages}, wa_log=${result.waMessageLogs}, audit=${result.auditLogs}`]
+        ).catch(() => {});
+    } catch (err) {
+        console.error('[Cron] Auto-cleanup failed:', err.message);
+    }
+};
+
 exports.deleteOldLogs = async (req, res) => {
     try {
         const cutoffDate = new Date();
@@ -2123,6 +2197,175 @@ exports.getAuditLog = async (req, res) => {
     } catch (error) {
         console.error('❌ Audit log error:', error);
         res.status(500).json({ success: false, message: 'Gagal mengambil audit log' });
+    }
+};
+
+// ============================================
+// FULL DB BACKUP — owner downloads everything as a single CSV
+// (all customers, purchases, messages, broadcast, etc.)
+//
+// Unlike exportOldLogs which only dumps data eligible for deletion,
+// this exports the ENTIRE working dataset for safekeeping. Run this
+// before any auto-cleanup, before major changes, or just on a schedule.
+// ============================================
+function escapeCsv(v) {
+    if (v === null || v === undefined) return '';
+    const s = String(v);
+    if (/[",\n\r]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+}
+
+function rowsToCsv(rows, columns) {
+    let csv = columns.join(',') + '\n';
+    for (const row of rows) {
+        csv += columns.map(c => escapeCsv(row[c])).join(',') + '\n';
+    }
+    return csv;
+}
+
+exports.fullBackup = async (req, res) => {
+    try {
+        // Pull every important table. Sensitive columns (password hashes, tokens)
+        // are excluded explicitly — backup is for data recovery, not credential dump.
+        const { rows: customers } = await db.query(
+            `SELECT id, nama_lengkap, whatsapp, source, status, tipe, tanggal_lahir, alamat,
+                    merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, tahu_dari,
+                    opted_in, catatan, wa_sent, last_purchase_at, last_incoming_message_at,
+                    created_at, updated_at
+             FROM customers ORDER BY id ASC`
+        );
+
+        const { rows: purchases } = await db.query(
+            `SELECT id, customer_id, merk_unit, tipe_unit, harga, qty, nama_sales,
+                    metode_pembayaran, source, created_at
+             FROM purchases ORDER BY id ASC`
+        );
+
+        // Messages — limit to last 6 months to keep file size reasonable; older
+        // is in cleanup-export. Owner needs recent chat history for ops continuity.
+        const { rows: messages } = await db.query(
+            `SELECT m.id, m.customer_id, c.nama_lengkap, c.whatsapp, m.direction,
+                    m.message, m.wa_message_id, m.sent_at
+             FROM messages m
+             LEFT JOIN customers c ON c.id = m.customer_id
+             WHERE m.sent_at > NOW() - INTERVAL '6 months'
+             ORDER BY m.id ASC`
+        );
+
+        const { rows: broadcastJobs } = await db.query(
+            `SELECT id, name, message, source_filter, status, total, sent, failed,
+                    created_at, completed_at
+             FROM broadcast_jobs ORDER BY id ASC`
+        );
+
+        const { rows: birthdayGreetings } = await db.query(
+            `SELECT bg.id, bg.customer_id, c.nama_lengkap, c.whatsapp,
+                    bg.greeting_year, bg.message, bg.status, bg.error, bg.sent_at
+             FROM birthday_greetings bg
+             LEFT JOIN customers c ON c.id = bg.customer_id
+             ORDER BY bg.id ASC`
+        );
+
+        const { rows: admins } = await db.query(
+            `SELECT id, username, nama, email, role, created_at FROM admins ORDER BY id ASC`
+        );
+
+        const { rows: appSettings } = await db.query(
+            `SELECT key, value, updated_at FROM app_settings ORDER BY key ASC`
+        );
+
+        const now = new Date().toISOString();
+        let csv = `# CAHAYA PHONE FULL BACKUP\n# Generated: ${now}\n# Customers: ${customers.length} | Purchases: ${purchases.length} | Messages (last 6mo): ${messages.length}\n# Broadcasts: ${broadcastJobs.length} | Birthdays: ${birthdayGreetings.length} | Admins: ${admins.length}\n\n`;
+
+        csv += '=== CUSTOMERS ===\n';
+        csv += rowsToCsv(customers, ['id', 'nama_lengkap', 'whatsapp', 'source', 'status', 'tipe', 'tanggal_lahir', 'alamat', 'merk_unit', 'tipe_unit', 'harga', 'qty', 'nama_sales', 'metode_pembayaran', 'tahu_dari', 'opted_in', 'catatan', 'wa_sent', 'last_purchase_at', 'last_incoming_message_at', 'created_at', 'updated_at']);
+
+        csv += '\n=== PURCHASES ===\n';
+        csv += rowsToCsv(purchases, ['id', 'customer_id', 'merk_unit', 'tipe_unit', 'harga', 'qty', 'nama_sales', 'metode_pembayaran', 'source', 'created_at']);
+
+        csv += '\n=== MESSAGES (last 6 months) ===\n';
+        csv += rowsToCsv(messages, ['id', 'customer_id', 'nama_lengkap', 'whatsapp', 'direction', 'message', 'wa_message_id', 'sent_at']);
+
+        csv += '\n=== BROADCAST JOBS ===\n';
+        csv += rowsToCsv(broadcastJobs, ['id', 'name', 'message', 'source_filter', 'status', 'total', 'sent', 'failed', 'created_at', 'completed_at']);
+
+        csv += '\n=== BIRTHDAY GREETINGS ===\n';
+        csv += rowsToCsv(birthdayGreetings, ['id', 'customer_id', 'nama_lengkap', 'whatsapp', 'greeting_year', 'message', 'status', 'error', 'sent_at']);
+
+        csv += '\n=== ADMINS (no passwords) ===\n';
+        csv += rowsToCsv(admins, ['id', 'username', 'nama', 'email', 'role', 'created_at']);
+
+        csv += '\n=== APP SETTINGS ===\n';
+        csv += rowsToCsv(appSettings, ['key', 'value', 'updated_at']);
+
+        const filename = `cahaya-phone-full-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send('﻿' + csv);   // BOM for Excel
+    } catch (err) {
+        console.error('❌ Full backup error:', err);
+        res.status(500).json({ success: false, message: 'Gagal generate backup: ' + err.message });
+    }
+};
+
+/**
+ * Resource usage snapshot — shows DB size, row counts, last cleanup info.
+ * Helps owner decide when to manually run cleanup.
+ * GET /api/admin/resource-usage
+ */
+exports.getResourceUsage = async (req, res) => {
+    try {
+        // Per-table row counts
+        const { rows: counts } = await db.query(`
+            SELECT 'customers' AS table_name, COUNT(*)::int AS rows FROM customers UNION ALL
+            SELECT 'messages', COUNT(*)::int FROM messages UNION ALL
+            SELECT 'whatsapp_logs', COUNT(*)::int FROM whatsapp_logs UNION ALL
+            SELECT 'broadcast_recipients', COUNT(*)::int FROM broadcast_recipients UNION ALL
+            SELECT 'broadcast_jobs', COUNT(*)::int FROM broadcast_jobs UNION ALL
+            SELECT 'purchases', COUNT(*)::int FROM purchases UNION ALL
+            SELECT 'admin_activity_logs', COUNT(*)::int FROM admin_activity_logs UNION ALL
+            SELECT 'birthday_greetings', COUNT(*)::int FROM birthday_greetings
+        `);
+
+        // Approximate DB size (Postgres reports per-table size)
+        let dbSizeBytes = 0;
+        try {
+            const { rows: sizeRows } = await db.query(`
+                SELECT pg_database_size(current_database())::bigint AS bytes
+            `);
+            dbSizeBytes = Number(sizeRows[0].bytes);
+        } catch (_) {
+            // Permission errors on some managed Postgres — fall back to row-count estimate
+            const estimated = counts.reduce((sum, t) => sum + (t.rows * 600), 0);  // ~600 bytes/row rough avg
+            dbSizeBytes = estimated;
+        }
+
+        // Find oldest message to gauge how soon cleanup pays off
+        const { rows: [oldestMsg] } = await db.query(
+            `SELECT MIN(sent_at) AS oldest FROM messages`
+        );
+
+        const sizeMB = (dbSizeBytes / (1024 * 1024)).toFixed(2);
+        const supabaseFreeLimit = 500;          // MB
+        const pctUsed = ((Number(sizeMB) / supabaseFreeLimit) * 100).toFixed(1);
+
+        res.json({
+            success: true,
+            data: {
+                tableCounts: counts,
+                dbSizeBytes,
+                dbSizeMB: Number(sizeMB),
+                supabaseFreeLimitMB: supabaseFreeLimit,
+                pctOfFreeTier: Number(pctUsed),
+                oldestMessageDate: oldestMsg?.oldest || null,
+                warning: Number(pctUsed) > 70 ? 'Database nearing free tier limit. Run cleanup or backup soon.' : null
+            }
+        });
+    } catch (err) {
+        console.error('❌ Resource usage error:', err);
+        res.status(500).json({ success: false, message: 'Gagal cek usage' });
     }
 };
 

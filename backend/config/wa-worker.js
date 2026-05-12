@@ -557,7 +557,10 @@ class WAWorker {
         const delay = Math.max(60_000, base + jitter);
         this.nextBroadcastAllowedAt = now + delay;
 
-        console.log(`[WA Worker] ✅ Sent (${totalSentToday}/day, ${this.msgsSinceLastBreak}/${this.nextBreakAt} until break). Next in ${Math.round(delay / 1000)}s (${inWarmup ? 'warmup' : 'normal'})`);
+        // Verbose log only outside production — saves RAM in log buffer + Railway egress
+        if (process.env.NODE_ENV !== 'production') {
+            console.log(`[WA Worker] ✅ Sent (${totalSentToday}/day, ${this.msgsSinceLastBreak}/${this.nextBreakAt} until break). Next in ${Math.round(delay / 1000)}s (${inWarmup ? 'warmup' : 'normal'})`);
+        }
     }
 
     async _claimNextRecipient() {

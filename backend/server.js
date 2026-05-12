@@ -239,5 +239,14 @@ if (process.env.VERCEL) {
             birthdayController.cronCheckBirthdays();
         }, { timezone: 'Asia/Makassar' });
 
+        // Monthly auto-cleanup — 1st of month at 03:00 WITA (low traffic window).
+        // Deletes messages/logs/broadcasts older than 30 days, audit logs older than
+        // 90 days. Idempotent; NEVER touches customers / purchases / admin records.
+        // Critical to keep us under Supabase free-tier 500MB limit indefinitely.
+        const adminControllerForCron = require('./controllers/adminController');
+        cron.schedule('0 3 1 * *', () => {
+            adminControllerForCron.cronMonthlyCleanup();
+        }, { timezone: 'Asia/Makassar' });
+        console.log('[Cron] Auto-cleanup scheduled: 1st of each month at 03:00 WITA');
     });
 }

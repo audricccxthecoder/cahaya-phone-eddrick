@@ -623,6 +623,17 @@
         <!-- Messages Page -->
         <div id="messagesPage" class="page">
 
+            <!-- Resource Usage + Full Backup Card -->
+            <div class="card" style="margin-bottom:16px;">
+                <div class="card-header">
+                    <h3>Backup &amp; Storage</h3>
+                    <button class="btn-small" onclick="loadResourceUsage()">Refresh</button>
+                </div>
+                <div class="card-body" id="resourceContainer">
+                    <div class="loading">Memuat info storage...</div>
+                </div>
+            </div>
+
             <!-- Cleanup Card -->
             <div class="card" style="margin-bottom:16px;">
                 <div class="card-header">

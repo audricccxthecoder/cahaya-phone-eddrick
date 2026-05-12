@@ -171,6 +171,10 @@ router.get('/admin/cleanup/status', authMiddleware, adminController.getCleanupSt
 router.get('/admin/cleanup/export', authMiddleware, adminController.exportOldLogs);
 router.post('/admin/cleanup/delete', authMiddleware, auditLog('cleanup_delete'), adminController.deleteOldLogs);
 
+// Full backup + resource monitoring
+router.get('/admin/backup/full', authMiddleware, auditLog('full_backup'), adminController.fullBackup);
+router.get('/admin/resource-usage', authMiddleware, adminController.getResourceUsage);
+
 // Audit trail
 router.get('/admin/audit-log', authMiddleware, adminController.getAuditLog);
 

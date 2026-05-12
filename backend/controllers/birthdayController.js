@@ -59,7 +59,12 @@ function calculateAge(birthDate) {
 }
 
 /**
- * Get customers yang ulang tahun hari ini
+ * Get customers yang ulang tahun hari ini.
+ *
+ * Feb 29 edge case: customers born on a leap day get their greeting on
+ * Feb 28 in non-leap years (most common convention in Indonesia). The
+ * extra OR clause matches Feb 28 today + Feb 29 birthday when current
+ * year isn't a leap year — so leap-day folks never miss a birthday wish.
  */
 async function getBirthdayToday() {
     const result = await db.query(`
@@ -69,9 +74,25 @@ async function getBirthdayToday() {
         LEFT JOIN birthday_greetings bg
             ON bg.customer_id = c.id AND bg.greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
         WHERE c.tanggal_lahir IS NOT NULL
-          AND EXTRACT(MONTH FROM c.tanggal_lahir) = EXTRACT(MONTH FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
-          AND EXTRACT(DAY FROM c.tanggal_lahir) = EXTRACT(DAY FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
           AND c.opted_in IS NOT FALSE
+          AND (
+            -- Normal case: month + day both match today
+            (EXTRACT(MONTH FROM c.tanggal_lahir) = EXTRACT(MONTH FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+             AND EXTRACT(DAY FROM c.tanggal_lahir) = EXTRACT(DAY FROM (NOW() AT TIME ZONE 'Asia/Makassar')))
+            -- Leap-day fallback: customer born Feb 29, today is Feb 28 of a non-leap year
+            OR (
+                EXTRACT(MONTH FROM c.tanggal_lahir) = 2
+                AND EXTRACT(DAY FROM c.tanggal_lahir) = 29
+                AND EXTRACT(MONTH FROM (NOW() AT TIME ZONE 'Asia/Makassar')) = 2
+                AND EXTRACT(DAY FROM (NOW() AT TIME ZONE 'Asia/Makassar')) = 28
+                AND NOT (
+                    -- Current year IS a leap year — let the real Feb 29 path handle it
+                    MOD(EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))::int, 4) = 0
+                    AND (MOD(EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))::int, 100) != 0
+                         OR MOD(EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))::int, 400) = 0)
+                )
+            )
+          )
         ORDER BY c.nama_lengkap
     `);
     return result.rows;

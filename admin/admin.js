@@ -1051,7 +1051,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             else if (page === 'birthday') loadBirthdayPage();
             else if (page === 'waconnect') { loadWAStatus(); loadWAAutoReply(); loadFailedWA(); }
             else if (page === 'broadcast') { loadDailySentCount(); const s = await apiCall('/admin/broadcast/status'); if (s && s.status) renderBroadcastStatus(s.status); }
-            else if (page === 'messages') { await loadMessages(); loadCleanupStatus(); }
+            else if (page === 'messages') { await loadMessages(); loadCleanupStatus(); loadResourceUsage(); }
         } catch (e) {
             console.error('Refresh error:', e);
         }
@@ -1514,6 +1514,82 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // ============================================
     // MESSAGES PAGE + DATA CLEANUP
     // ============================================
+
+    // --- Resource usage + Full backup ---
+
+    window.loadResourceUsage = async function() {
+        const container = document.getElementById('resourceContainer');
+        if (!container) return;
+        const res = await apiCall('/admin/resource-usage');
+        if (!res || !res.success) {
+            container.innerHTML = '<p class="muted">Gagal memuat info storage.</p>';
+            return;
+        }
+        const d = res.data;
+        const pct = d.pctOfFreeTier;
+        const barColor = pct > 80 ? '#DC2626' : pct > 60 ? '#F59E0B' : '#16A34A';
+        const warningBox = d.warning
+            ? `<div style="background:#FEE2E2;border:1px solid #FCA5A5;color:#991B1B;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;">⚠️ ${esc(d.warning)}</div>`
+            : '';
+        const rowsHtml = d.tableCounts.map(t => `
+            <tr><td style="padding:6px 10px;border-bottom:1px solid #F5F3F0;">${esc(t.table_name)}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${t.rows.toLocaleString('id-ID')}</td></tr>`).join('');
+
+        container.innerHTML = `
+            ${warningBox}
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;">
+                    <span><strong>${d.dbSizeMB} MB</strong> dari ${d.supabaseFreeLimitMB} MB Supabase Free</span>
+                    <span style="color:${barColor};font-weight:600;">${pct}%</span>
+                </div>
+                <div style="background:#F5F3F0;border-radius:6px;height:10px;overflow:hidden;">
+                    <div style="background:${barColor};height:100%;width:${Math.min(100, pct)}%;border-radius:6px;transition:width 0.4s;"></div>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+                <button class="btn-primary" style="padding:8px 16px;font-size:13px;" onclick="downloadFullBackup()">
+                    💾 Download Full Backup (CSV)
+                </button>
+                <span style="font-size:11px;color:#8C8078;align-self:center;">
+                    Auto-cleanup berikutnya: <strong>tanggal 1 bulan depan, 03:00 WITA</strong>
+                </span>
+            </div>
+
+            <details>
+                <summary style="cursor:pointer;font-size:13px;color:#5C534B;font-weight:500;margin-bottom:8px;">Detail tabel</summary>
+                <table style="width:100%;font-size:13px;margin-top:8px;border-collapse:collapse;">
+                    <thead><tr style="background:#FAFAF8;">
+                        <th style="padding:6px 10px;text-align:left;font-weight:600;">Tabel</th>
+                        <th style="padding:6px 10px;text-align:right;font-weight:600;">Jumlah Row</th>
+                    </tr></thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+            </details>
+        `;
+    };
+
+    window.downloadFullBackup = async function() {
+        const btn = event?.target;
+        const origText = btn?.textContent;
+        if (btn) { btn.disabled = true; btn.textContent = 'Membuat backup...'; }
+        try {
+            const response = await fetch(`${API_URL}/admin/backup/full`, { credentials: 'include' });
+            if (!response.ok) throw new Error(`Server returned ${response.status}`);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `cahaya-phone-full-backup-${toWITADate(new Date())}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            alert('✅ Backup berhasil di-download. Simpan file ini di tempat aman (Google Drive / external storage).');
+        } catch (e) {
+            alert('❌ Gagal download backup: ' + e.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = origText; }
+        }
+    };
 
     // --- Cleanup functions ---
 
