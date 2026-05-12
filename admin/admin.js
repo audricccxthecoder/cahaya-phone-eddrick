@@ -754,6 +754,77 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // DASHBOARD
     // ============================================
 
+    // Monthly backup reminder banner. Shows when last_backup_at > 30 days OR never.
+    // Workflow: admin clicks Download → CSV downloads + timestamp saved server-side
+    // → "Cleanup data lama" button revealed → admin confirms → batched delete runs.
+    async function loadBackupBanner() {
+        try {
+            const result = await apiCall('/admin/backup/status');
+            if (!result || !result.success) return;
+            const data = result.data;
+            if (!data.needsBackup) return;
+
+            const today = new Date().toISOString().slice(0, 10);
+            const dismissedUntil = localStorage.getItem('backupBannerDismissedUntil');
+            if (dismissedUntil && new Date(dismissedUntil) > new Date()) return;
+
+            const banner = document.getElementById('backupBanner');
+            if (!banner) return;
+
+            const palette = {
+                info:    { bg: '#EFF6FF', border: '#BFDBFE', color: '#1E40AF' },
+                warning: { bg: '#FEF3C7', border: '#FDE68A', color: '#92400E' },
+                urgent:  { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B' }
+            }[data.severity] || { bg: '#F3F4F6', border: '#D1D5DB', color: '#374151' };
+
+            banner.style.background = palette.bg;
+            banner.style.borderColor = palette.border;
+            banner.style.color = palette.color;
+
+            const titleEl = document.getElementById('backupBannerTitle');
+            const msgEl = document.getElementById('backupBannerMessage');
+            if (data.daysSinceBackup === null) {
+                titleEl.textContent = 'Belum pernah backup data';
+                msgEl.textContent = 'Download backup lengkap dulu untuk arsip. Data customer, riwayat pembelian, chat — semuanya dalam 1 file CSV.';
+            } else if (data.severity === 'urgent') {
+                titleEl.textContent = `${data.daysSinceBackup} hari sejak backup terakhir`;
+                msgEl.textContent = 'Sudah lewat 45 hari! Segera download backup lengkap + cleanup data lama biar storage tetap aman.';
+            } else {
+                titleEl.textContent = `${data.daysSinceBackup} hari sejak backup terakhir`;
+                msgEl.textContent = 'Saatnya download backup bulanan. Setelah download, jalankan cleanup data lama supaya storage Supabase gak menumpuk.';
+            }
+
+            banner.style.display = 'block';
+
+            // Wire buttons
+            document.getElementById('backupBannerDownload').onclick = async () => {
+                await window.downloadFullBackup();
+                // Reveal cleanup button so admin can finish the monthly workflow
+                document.getElementById('backupBannerCleanup').style.display = 'inline-flex';
+            };
+
+            document.getElementById('backupBannerCleanup').onclick = async () => {
+                if (!confirm('Sudah PASTIKAN backup CSV ter-download & bisa dibuka di Excel?\n\nSetelah ini, data lama (>14-30 hari) akan dihapus permanen dari database.\n\nLanjutkan?')) return;
+                const result = await apiCall('/admin/cleanup/delete', { method: 'POST' });
+                if (result && result.success) {
+                    alert(`✅ ${result.deleted.total} data lama berhasil dihapus.\n\nDetail:\n• Chat lama: ${result.deleted.messages}\n• WA logs: ${result.deleted.waMessageLogs}\n• Broadcast: ${result.deleted.broadcastJobs} job + ${result.deleted.broadcastRecipients} penerima\n• Audit: ${result.deleted.auditLogs}`);
+                    banner.style.display = 'none';
+                    if (typeof loadResourceUsage === 'function') loadResourceUsage();
+                } else {
+                    alert('❌ Cleanup gagal. Cek log untuk detail.');
+                }
+            };
+
+            document.getElementById('backupBannerDismiss').onclick = () => {
+                const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+                localStorage.setItem('backupBannerDismissedUntil', sevenDaysLater.toISOString());
+                banner.style.display = 'none';
+            };
+        } catch (e) {
+            console.warn('loadBackupBanner failed:', e.message);
+        }
+    }
+
     // Railway billing reminder banner. Calls /admin/billing-status and renders
     // a colored banner at top of dashboard when within 3 days of billing (or up
     // to 2 days past). Severity → color: info (blue) → warning (amber) →
@@ -831,6 +902,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             // Railway billing reminder banner — fires only on H-3..H+2 (else no-op).
             loadBillingBanner();
+            // Monthly backup reminder — fires when last_backup_at > 30 days ago.
+            loadBackupBanner();
 
             // Load statistics
             const stats = await apiCall('/admin/stats');
@@ -1143,23 +1216,13 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (isBelanja) {
                 const produk = customer.merk_unit && customer.tipe_unit
                     ? `${esc(customer.merk_unit)} ${esc(customer.tipe_unit)}` : '-';
-                // For repeat buyers, show CUMULATIVE total (sum of all purchases) — makes it
-                // obvious that historical data IS preserved. Single-purchase customers see
-                // the regular latest-price formatting.
-                const totalSpent = Number(customer.total_spent) || 0;
-                const latestHarga = Number(customer.harga) || 0;
-                const fmt = (n) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(n);
-                let hargaCell = '-';
-                if (pCount > 1 && totalSpent > 0) {
-                    // Show total bold, with latest as a smaller subtext
-                    hargaCell = `<div style="font-weight:600;color:#B91C1C;">${fmt(totalSpent)}</div>` +
-                        `<div style="font-size:10px;color:#8C8078;">${pCount} transaksi · terakhir ${fmt(latestHarga)}</div>`;
-                } else if (latestHarga > 0) {
-                    hargaCell = fmt(latestHarga);
-                }
+                // List view shows the LATEST purchase price only. Full purchase history
+                // and total-spent live on the detail page (clicking "Detail").
+                const harga = customer.harga
+                    ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(customer.harga) : '-';
                 html += `<td>${esc(customer.nama_sales || '-')}</td>
                     <td>${produk}</td>
-                    <td>${hargaCell}</td>
+                    <td>${harga}</td>
                     <td>${esc(customer.metode_pembayaran || '-')}</td>`;
             } else {
                 // Catatan editable for Chat Only — value goes into an attribute, so esc() handles quote/lt/gt

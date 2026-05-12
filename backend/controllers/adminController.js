@@ -2035,45 +2035,109 @@ exports.exportOldLogs = async (req, res) => {
  * Delete old logs (permanent)
  * POST /api/admin/cleanup/delete
  */
+// Tiered retention — successful broadcast/auto-reply logs are pure
+// machine bookkeeping (we already saw they delivered, no follow-up needed),
+// so 14 days is plenty. Chat messages stay longer (30 days) because admin
+// might need to scroll back to follow up on a recent conversation.
+const RETENTION = {
+    waLogSent:        14,   // SENT whatsapp_logs — fast clean
+    waLogFailed:      30,   // FAILED — keep longer so admin can investigate
+    broadcastJob:     14,   // completed/stopped broadcast jobs
+    broadcastRecip:   14,
+    messages:         30,   // chat history — admin context
+    waDailyStats:     90,
+    auditLogs:        90    // compliance/forensics
+};
+
+/**
+ * Batched delete — deletes rows in chunks of `batchSize` with a sleep between
+ * chunks. Prevents single-DELETE table lock from spiking Supabase CPU and
+ * timing out concurrent admin requests. Sleep is short (300ms) because total
+ * cleanup volume is small (<50K rows usually) — we just don't want one giant
+ * lock.
+ */
+async function batchedDelete(sql, params, batchSize = 500, sleepMs = 300) {
+    let total = 0;
+    while (true) {
+        // Each iteration deletes up to batchSize matching rows. The IN(subselect LIMIT)
+        // pattern is portable and lets Postgres pick the cheapest plan.
+        const { rowCount } = await db.query(sql.replace('${batchSize}', String(batchSize)), params);
+        if (!rowCount) break;
+        total += rowCount;
+        if (rowCount < batchSize) break;   // last batch, no need to sleep
+        await new Promise(r => setTimeout(r, sleepMs));
+    }
+    return total;
+}
+
+function daysAgo(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    return d;
+}
+
 /**
  * Internal: actually do the cleanup. Used by both the HTTP endpoint
  * (admin manual click) and the monthly auto-cleanup cron.
+ *
+ * Uses tiered retention + batched deletes for Supabase-friendly behavior.
  */
 async function performCleanup() {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - CLEANUP_DAYS);
-    const cutoff90 = new Date();
-    cutoff90.setDate(cutoff90.getDate() - 90);
-
-    const { rowCount: tokenDeleted } = await db.query(
+    const tokenDeleted = (await db.query(
         `DELETE FROM admin_reset_tokens WHERE used = TRUE OR expires_at < NOW()`
-    );
-    const { rowCount: recDeleted } = await db.query(
+    )).rowCount;
+
+    const recDeleted = await batchedDelete(
         `DELETE FROM broadcast_recipients
-         WHERE job_id IN (SELECT id FROM broadcast_jobs WHERE status IN ('completed','stopped') AND created_at < $1)`,
-        [cutoffDate]
-    );
-    const { rowCount: jobDeleted } = await db.query(
-        `DELETE FROM broadcast_jobs WHERE status IN ('completed','stopped') AND created_at < $1`,
-        [cutoffDate]
-    );
-    const { rowCount: msgDeleted } = await db.query(
-        `DELETE FROM messages WHERE sent_at < $1`,
-        [cutoffDate]
-    );
-    const { rowCount: waLogDeleted } = await db.query(
-        `DELETE FROM whatsapp_logs WHERE created_at < $1`,
-        [cutoffDate]
-    );
-    const { rowCount: waDailyDeleted } = await db.query(
-        `DELETE FROM wa_daily_stats WHERE stat_date < $1`,
-        [cutoff90]
-    );
-    const { rowCount: auditDeleted } = await db.query(
-        `DELETE FROM admin_activity_logs WHERE created_at < $1`,
-        [cutoff90]
+         WHERE id IN (SELECT id FROM broadcast_recipients
+                      WHERE job_id IN (SELECT id FROM broadcast_jobs
+                                       WHERE status IN ('completed','stopped') AND created_at < $1)
+                      LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.broadcastRecip)]
     );
 
+    const jobDeleted = await batchedDelete(
+        `DELETE FROM broadcast_jobs
+         WHERE id IN (SELECT id FROM broadcast_jobs
+                      WHERE status IN ('completed','stopped') AND created_at < $1
+                      LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.broadcastJob)]
+    );
+
+    const msgDeleted = await batchedDelete(
+        `DELETE FROM messages
+         WHERE id IN (SELECT id FROM messages WHERE sent_at < $1 LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.messages)]
+    );
+
+    // whatsapp_logs split by status — SENT cleans fast, FAILED kept longer for investigation
+    const waLogSentDeleted = await batchedDelete(
+        `DELETE FROM whatsapp_logs
+         WHERE id IN (SELECT id FROM whatsapp_logs
+                      WHERE status = 'SENT' AND created_at < $1
+                      LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.waLogSent)]
+    );
+    const waLogOtherDeleted = await batchedDelete(
+        `DELETE FROM whatsapp_logs
+         WHERE id IN (SELECT id FROM whatsapp_logs
+                      WHERE status != 'SENT' AND created_at < $1
+                      LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.waLogFailed)]
+    );
+
+    const waDailyDeleted = (await db.query(
+        `DELETE FROM wa_daily_stats WHERE stat_date < $1`,
+        [daysAgo(RETENTION.waDailyStats)]
+    )).rowCount;
+
+    const auditDeleted = await batchedDelete(
+        `DELETE FROM admin_activity_logs
+         WHERE id IN (SELECT id FROM admin_activity_logs WHERE created_at < $1 LIMIT \${batchSize})`,
+        [daysAgo(RETENTION.auditLogs)]
+    );
+
+    const waLogDeleted = waLogSentDeleted + waLogOtherDeleted;
     const totalDeleted = recDeleted + jobDeleted + msgDeleted + tokenDeleted + waLogDeleted + waDailyDeleted + auditDeleted;
     return {
         messages: msgDeleted,
@@ -2314,9 +2378,55 @@ exports.fullBackup = async (req, res) => {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
         res.send('﻿' + csv);   // BOM for Excel
+
+        // Mark the timestamp so the dashboard monthly-backup banner can compute
+        // "X days since last backup" and remind the owner if it's >30 days.
+        db.query(
+            `INSERT INTO app_settings (key, value) VALUES ('last_backup_at', $1)
+             ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+            [new Date().toISOString()]
+        ).catch(err => console.warn('[Backup] Could not save timestamp:', err.message));
     } catch (err) {
         console.error('❌ Full backup error:', err);
         res.status(500).json({ success: false, message: 'Gagal generate backup: ' + err.message });
+    }
+};
+
+/**
+ * GET /api/admin/backup/status — used by dashboard banner to remind owner to back up
+ * once a month. Returns days since last backup and a recommendation flag.
+ */
+exports.getBackupStatus = async (req, res) => {
+    try {
+        const { rows } = await db.query(
+            `SELECT value FROM app_settings WHERE key = 'last_backup_at' LIMIT 1`
+        );
+        const lastBackup = rows[0]?.value ? new Date(rows[0].value) : null;
+        const daysSince = lastBackup
+            ? Math.floor((Date.now() - lastBackup.getTime()) / (1000 * 60 * 60 * 24))
+            : null;
+
+        // Banner shows when:
+        //  - never backed up, OR
+        //  - last backup >30 days ago
+        const needsBackup = !lastBackup || daysSince >= 30;
+        const severity = !lastBackup ? 'info'
+                       : daysSince >= 45 ? 'urgent'
+                       : daysSince >= 30 ? 'warning'
+                       : 'none';
+
+        res.json({
+            success: true,
+            data: {
+                lastBackupAt: lastBackup ? lastBackup.toISOString() : null,
+                daysSinceBackup: daysSince,
+                needsBackup,
+                severity
+            }
+        });
+    } catch (err) {
+        console.error('❌ Backup status error:', err);
+        res.status(500).json({ success: false, message: 'Gagal cek status backup' });
     }
 };
 

@@ -245,11 +245,20 @@ async function startSocket() {
             logger,
             printQRInTerminal: false,
             browser: Browsers.macOS('Safari'),
-            syncFullHistory: false,
-            markOnlineOnConnect: false,
-            generateHighQualityLinkPreview: false,
-            // Don't cache message retries — keeps memory low
-            getMessage: async () => undefined
+            // Memory-leak prevention — Baileys defaults aggressively cache history/state.
+            // We don't need any of that because the backend persists everything to DB.
+            syncFullHistory: false,                 // don't replay full chat history on connect
+            markOnlineOnConnect: false,             // skip phantom presence update
+            generateHighQualityLinkPreview: false,  // no link preview = no thumbnail download
+            getMessage: async () => undefined,      // don't cache messages for retry
+            // Tunable timeouts to prevent stuck WebSockets from inflating heap.
+            keepAliveIntervalMs: 30_000,
+            connectTimeoutMs: 60_000,
+            defaultQueryTimeoutMs: 60_000,
+            // Cap the in-memory message buffer Baileys keeps per chat.
+            // Default is 100 messages × 1000 chats = potentially huge.
+            shouldSyncHistoryMessage: () => false,
+            shouldIgnoreJid: jid => /@(broadcast|status)/.test(jid || '')  // skip status broadcasts
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -572,6 +581,38 @@ async function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// ============================================
+// DAILY RESTART — keep Node heap fresh
+// ============================================
+// Even with all the anti-bloat Baileys options, V8's garbage collector can
+// accumulate fragmented memory over days/weeks of operation, slowly inflating
+// RAM. Railway charges by RAM-hour, and an OOM kill would still cost a
+// reconnection. Cheaper to schedule a self-shutdown daily at 03:00 WITA
+// (shop is closed) — Railway will start a fresh process automatically, with
+// reset heap and a fresh Baileys WebSocket. Total downtime ~30-60s.
+//
+// Can be disabled by setting DISABLE_DAILY_RESTART=true (e.g., during testing).
+function scheduleDailyRestart() {
+    if (process.env.DISABLE_DAILY_RESTART === 'true') {
+        console.log('[BAILEYS] Daily restart disabled via env');
+        return;
+    }
+    const now = Date.now();
+    const wita = new Date(now + 8 * 60 * 60 * 1000);   // UTC+8
+    const nextWita = new Date(wita);
+    nextWita.setUTCHours(3, 0, 0, 0);                   // 03:00 WITA target
+    if (nextWita <= wita) nextWita.setUTCDate(nextWita.getUTCDate() + 1);
+    const msUntil = nextWita.getTime() - wita.getTime();
+    const hours = Math.round(msUntil / (60 * 60 * 1000));
+
+    console.log(`[BAILEYS] Daily restart scheduled in ~${hours}h (target: 03:00 WITA)`);
+    setTimeout(() => {
+        console.log('[BAILEYS] Daily 03:00 WITA restart — exiting so Railway respawns with fresh heap');
+        shutdown('DAILY_RESTART');
+    }, msUntil);
+}
+scheduleDailyRestart();
 
 // Prevent silent crashes
 process.on('uncaughtException', (err) => {

@@ -50,6 +50,30 @@
         <!-- Dashboard Page -->
         <div id="dashboardPage" class="page active">
 
+            <!-- Monthly Backup Reminder Banner — shows when last backup >30 days ago -->
+            <div id="backupBanner" style="display:none;padding:14px 20px;border-radius:10px;margin-bottom:16px;border:1px solid;">
+                <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+                    <div style="display:flex;align-items:flex-start;gap:10px;flex:1;min-width:0;">
+                        <span style="font-size:22px;line-height:1;">📥</span>
+                        <div style="min-width:0;flex:1;">
+                            <strong id="backupBannerTitle" style="font-size:14px;display:block;margin-bottom:3px;">Saatnya backup data bulan ini</strong>
+                            <p id="backupBannerMessage" style="margin:0;font-size:12px;line-height:1.5;"></p>
+                            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+                                <button type="button" id="backupBannerDownload" style="padding:5px 12px;background:#fff;border:1px solid currentColor;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;color:inherit;">
+                                    💾 Download Full Backup (CSV)
+                                </button>
+                                <button type="button" id="backupBannerCleanup" style="padding:5px 12px;background:transparent;border:1px solid currentColor;border-radius:6px;font-size:11px;font-weight:500;cursor:pointer;color:inherit;display:none;">
+                                    🗑️ Cleanup data lama (setelah download)
+                                </button>
+                                <button type="button" id="backupBannerDismiss" style="padding:5px 12px;background:transparent;border:1px solid currentColor;border-radius:6px;font-size:11px;font-weight:500;cursor:pointer;color:inherit;opacity:0.7;">
+                                    Tutup 7 hari
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Railway Billing Reminder Banner — auto-shows H-3, H-2, H-1, H, and up to H+2 -->
             <div id="billingBanner" style="display:none;padding:14px 20px;border-radius:10px;margin-bottom:16px;border:1px solid;">
                 <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
