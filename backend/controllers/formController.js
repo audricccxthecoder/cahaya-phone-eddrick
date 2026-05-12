@@ -178,8 +178,11 @@ exports.submitForm = async (req, res) => {
             customer_id: customerId
         });
 
-        // Background: kirim WA auto-reply (tidak blocking response)
-        // Guard: cek toggle form_autoreply_enabled. Default ON kalau belum di-set.
+        // Background: enqueue WA auto-reply (tidak blocking response).
+        // Toggle ON → auto_dispatch=TRUE, worker kirim otomatis dengan pacing.
+        // Toggle OFF → auto_dispatch=FALSE, baru terkirim setelah admin klik manual.
+        // Toggle state di-snapshot saat enqueue, jadi flip toggle setelah submit
+        // tidak ngubah perilaku row yang sudah masuk queue.
         (async () => {
             try {
                 const { rows: setting } = await db.query(
@@ -187,21 +190,18 @@ exports.submitForm = async (req, res) => {
                 );
                 const autoReplyEnabled = setting.length === 0 || setting[0].value !== 'false';
 
-                if (!autoReplyEnabled) {
-                    console.log(`[Form] Auto-reply disabled via setting — skipped for customer #${customerId}`);
-                    await db.query('UPDATE customers SET wa_sent = FALSE WHERE id = $1', [customerId]).catch(() => {});
-                    return;
+                const waResult = await whatsappService.enqueueAutoReply(
+                    { nama_lengkap: finalName, whatsapp: cleanPhone },
+                    { autoDispatch: autoReplyEnabled }
+                );
+                if (!waResult || !waResult.success) {
+                    console.warn('⚠️ enqueueAutoReply returned non-success:', waResult?.error);
                 }
-
-                // Queue auto-reply (worker delivers with 60-120s pacing + working hours guard).
-                // Form responds to customer immediately; WA send happens minutes later.
-                const waResult = await whatsappService.enqueueAutoReply({ nama_lengkap: finalName, whatsapp: cleanPhone });
-                const queued = waResult && waResult.success;
-                // wa_sent stays false until worker actually sends. Status moves to Contacted on send.
-                await db.query('UPDATE customers SET wa_sent = $1, status = $2 WHERE id = $3',
-                    [false, queued ? 'New' : 'New', customerId]);
+                // wa_sent stays false until worker (or manual click) actually sends.
+                await db.query('UPDATE customers SET wa_sent = FALSE, status = $1 WHERE id = $2',
+                    ['New', customerId]);
             } catch (waError) {
-                console.warn('⚠️ WhatsApp auto-reply failed:', waError.message || waError);
+                console.warn('⚠️ WhatsApp auto-reply enqueue failed:', waError.message || waError);
                 await db.query('UPDATE customers SET wa_sent = FALSE, status = $1 WHERE id = $2', ['New', customerId]).catch(() => {});
             }
         })();

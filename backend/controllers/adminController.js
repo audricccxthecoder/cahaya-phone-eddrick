@@ -1742,79 +1742,218 @@ exports.updateWASettings = async (req, res) => {
 // RETRY FAILED WA MESSAGES
 // ============================================
 
+// Helper: 08:00–22:00 WITA window — matches wa-worker._isWorkingHours().
+// Kept inline (no import) because adminController shouldn't depend on worker internals.
+const WA_WORK_START = 8, WA_WORK_END = 22;
+function _isWorkingHoursWITA() {
+    const witaHours = (new Date().getUTCHours() + 8) % 24;
+    return witaHours >= WA_WORK_START && witaHours < WA_WORK_END;
+}
+
 /**
- * Get customers with pending/failed WA delivery.
+ * Get customers with pending/failed WA delivery, enriched with per-customer
+ * queue context (the auto_dispatch flag of their latest pending log row).
  *
- * Anything with wa_sent=FALSE surfaces here — including QUEUED submissions
- * waiting for working hours and FAILED sends. Owner sees them as actionable
- * (manual "Kirim Ulang" button available). When the worker successfully
- * sends, wa-worker.js flips wa_sent=TRUE and the row disappears from this
- * list automatically.
+ * Frontend uses log_auto_dispatch to render the manual button:
+ *   - TRUE (or null/no row) → DISABLED. System will auto-send when worker
+ *     reaches it. Admin just waits and refreshes.
+ *   - FALSE → ENABLED. Toggle was OFF when row was enqueued, so admin
+ *     must explicitly click to promote the row to auto_dispatch=TRUE.
+ *
+ * `has_auto_pending` tells frontend whether ANY auto_dispatch=TRUE rows are
+ * still QUEUED/SENDING — if yes, manual buttons should reject with 409
+ * because the auto queue has priority.
+ *
+ * `is_working_hours` lets frontend render a "luar jam operasional" hint so
+ * admin understands why manual clicks won't go through right now.
  *
  * GET /api/admin/wa/failed
  */
 exports.getFailedWA = async (req, res) => {
     try {
         const { rows } = await db.query(
-            `SELECT id, nama_lengkap, whatsapp, wa_sent, tipe, created_at
-             FROM customers WHERE wa_sent = FALSE ORDER BY created_at DESC`
+            `SELECT c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at,
+                    w.id AS log_id, w.status AS log_status, w.auto_dispatch AS log_auto_dispatch
+             FROM customers c
+             LEFT JOIN LATERAL (
+                 SELECT id, status, auto_dispatch FROM whatsapp_logs
+                 WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE c.wa_sent = FALSE
+             ORDER BY c.created_at DESC`
         );
-        res.json({ success: true, data: rows, count: rows.length });
+
+        // Check if any auto_dispatch=TRUE rows are still pending — used by frontend
+        // to know whether manual clicks will be rejected with 409.
+        const { rows: autoPending } = await db.query(
+            `SELECT COUNT(*)::int AS cnt FROM whatsapp_logs
+             WHERE type = 'auto_reply' AND status IN ('QUEUED','SENDING') AND auto_dispatch = TRUE`
+        );
+
+        res.json({
+            success: true,
+            data: rows,
+            count: rows.length,
+            has_auto_pending: autoPending[0].cnt > 0,
+            is_working_hours: _isWorkingHoursWITA(),
+            working_hours: { start: WA_WORK_START, end: WA_WORK_END, tz: 'WITA' }
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
 /**
- * Retry sending WA message to a specific customer
+ * Promote a customer's QUEUED auto_dispatch=FALSE row to auto_dispatch=TRUE
+ * so the worker picks it up (with pacing/break/randomize).
+ *
+ * Hard rules:
+ *   1. If customer has no pending QUEUED/SENDING row → create one (handles
+ *      legacy FAILED state from before this column existed).
+ *   2. If their pending row is already auto_dispatch=TRUE → 400. System is
+ *      already handling it; manual click is a no-op.
+ *   3. If ANY other auto_dispatch=TRUE row is still QUEUED/SENDING → 409.
+ *      Auto queue has priority; admin must wait for it to drain before
+ *      manual sends can take a slot.
+ *   4. Otherwise: flip target row to auto_dispatch=TRUE and return 202.
+ *      Worker picks it up at next tick with full pacing applied.
+ *
+ * Frontend polls /admin/wa/failed to know when the send completes (customer
+ * disappears from the list when wa_sent=TRUE).
+ *
  * POST /api/admin/wa/retry/:id
  */
 exports.retryWA = async (req, res) => {
     try {
+        // Gate 0: working hours. Manual click outside 08-22 WITA does nothing
+        // (no DB writes) so admin can't accidentally schedule sends that won't
+        // fire until next morning anyway.
+        if (!_isWorkingHoursWITA()) {
+            return res.status(400).json({
+                success: false,
+                outside_working_hours: true,
+                message: `Di luar jam operasional (${WA_WORK_START}:00–${WA_WORK_END}:00 WITA). Coba lagi saat jam buka.`
+            });
+        }
+
         const { id } = req.params;
-        const { rows } = await db.query('SELECT id, nama_lengkap, whatsapp FROM customers WHERE id = $1', [id]);
-        if (rows.length === 0) return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+        const { rows: cust } = await db.query(
+            'SELECT id, nama_lengkap, whatsapp FROM customers WHERE id = $1', [id]
+        );
+        if (cust.length === 0) {
+            return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+        }
+        const customer = cust[0];
+        const cleanPhone = sanitizePhone(customer.whatsapp);
 
-        const customer = rows[0];
-        const waResult = await whatsappService.sendAutoReply({ nama_lengkap: customer.nama_lengkap, whatsapp: customer.whatsapp });
-        const waSent = waResult && waResult.success;
-        await db.query('UPDATE customers SET wa_sent = $1, status = CASE WHEN $1 = TRUE THEN $2 ELSE status END WHERE id = $3',
-            [waSent, 'Completed', customer.id]);
+        // 1. Find latest pending row for this customer (auto_reply)
+        const { rows: pending } = await db.query(
+            `SELECT id, auto_dispatch FROM whatsapp_logs
+             WHERE phone = $1 AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
+             ORDER BY id DESC LIMIT 1`,
+            [cleanPhone]
+        );
 
-        res.json({ success: waSent, message: waSent ? 'Pesan berhasil dikirim ulang' : ('Gagal kirim ulang: ' + (waResult?.error || 'WA tidak tersedia')) });
+        let targetRowId;
+        if (pending.length === 0) {
+            // No pending row — likely a legacy customer or all rows already FAILED.
+            // Enqueue a fresh one with auto_dispatch=TRUE so worker takes it.
+            const enqRes = await whatsappService.enqueueAutoReply(
+                { nama_lengkap: customer.nama_lengkap, whatsapp: customer.whatsapp },
+                { autoDispatch: true }
+            );
+            if (!enqRes || !enqRes.success) {
+                return res.status(500).json({
+                    success: false,
+                    message: 'Gagal masukkan pesan ke antrian: ' + (enqRes?.error || 'unknown')
+                });
+            }
+            targetRowId = enqRes.log_id;
+        } else {
+            const row = pending[0];
+            if (row.auto_dispatch === true) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Pesan ini sudah dalam antrian otomatis. Sistem akan kirim sendiri saat jam operasional.'
+                });
+            }
+            targetRowId = row.id;
+        }
+
+        // 2. Priority gate — auto queue must drain first
+        const { rows: autoPending } = await db.query(
+            `SELECT COUNT(*)::int AS cnt FROM whatsapp_logs
+             WHERE type = 'auto_reply'
+               AND status IN ('QUEUED','SENDING')
+               AND auto_dispatch = TRUE
+               AND id <> $1`,
+            [targetRowId]
+        );
+        if (autoPending[0].cnt > 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'Tidak bisa kirim sekarang — masih ada antrian otomatis. Tunggu sampai semua pesan otomatis selesai, baru bisa kirim manual.'
+            });
+        }
+
+        // 3. Flip target to auto_dispatch=TRUE — worker takes it from here
+        await db.query(
+            `UPDATE whatsapp_logs SET auto_dispatch = TRUE, updated_at = NOW() WHERE id = $1`,
+            [targetRowId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Pesan diteruskan ke worker dengan delay anti-ban. Beberapa menit lagi terkirim.',
+            log_id: targetRowId
+        });
     } catch (error) {
+        console.error('retryWA error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
 /**
- * Retry all failed WA messages
+ * Bulk-promote all auto_dispatch=FALSE QUEUED rows. Same priority gate as
+ * single retry — if there are auto_dispatch=TRUE rows still pending, reject
+ * the whole batch with 409.
+ *
  * POST /api/admin/wa/retry-all
  */
 exports.retryAllWA = async (req, res) => {
     try {
-        const { rows } = await db.query(
-            `SELECT id, nama_lengkap, whatsapp FROM customers WHERE wa_sent = FALSE ORDER BY created_at ASC`
-        );
-        if (rows.length === 0) return res.json({ success: true, message: 'Tidak ada pesan gagal', retried: 0 });
-
-        let sent = 0, failed = 0;
-        for (const customer of rows) {
-            try {
-                const waResult = await whatsappService.sendAutoReply({ nama_lengkap: customer.nama_lengkap, whatsapp: customer.whatsapp });
-                const waSent = waResult && waResult.success;
-                await db.query('UPDATE customers SET wa_sent = $1, status = CASE WHEN $1 = TRUE THEN $2 ELSE status END WHERE id = $3',
-                    [waSent, 'Completed', customer.id]);
-                if (waSent) sent++; else failed++;
-                // Anti-spam delay
-                await new Promise(r => setTimeout(r, 3000 + Math.random() * 5000));
-            } catch (e) {
-                failed++;
-                await db.query('UPDATE customers SET wa_sent = FALSE WHERE id = $1', [customer.id]).catch(() => {});
-            }
+        // Gate 0: working hours
+        if (!_isWorkingHoursWITA()) {
+            return res.status(400).json({
+                success: false,
+                outside_working_hours: true,
+                message: `Di luar jam operasional (${WA_WORK_START}:00–${WA_WORK_END}:00 WITA). Coba lagi saat jam buka.`
+            });
         }
 
-        res.json({ success: true, message: `Kirim ulang selesai: ${sent} berhasil, ${failed} gagal`, sent, failed });
+        // Priority gate
+        const { rows: autoPending } = await db.query(
+            `SELECT COUNT(*)::int AS cnt FROM whatsapp_logs
+             WHERE type = 'auto_reply' AND status IN ('QUEUED','SENDING') AND auto_dispatch = TRUE`
+        );
+        if (autoPending[0].cnt > 0) {
+            return res.status(409).json({
+                success: false,
+                message: 'Masih ada antrian otomatis. Tunggu selesai dulu sebelum kirim manual semua.'
+            });
+        }
+
+        const { rowCount } = await db.query(
+            `UPDATE whatsapp_logs SET auto_dispatch = TRUE, updated_at = NOW()
+             WHERE type = 'auto_reply' AND status = 'QUEUED' AND auto_dispatch = FALSE`
+        );
+
+        res.json({
+            success: true,
+            message: `${rowCount} pesan masuk antrian. Worker akan kirim satu-per-satu dengan delay anti-ban.`,
+            promoted: rowCount
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

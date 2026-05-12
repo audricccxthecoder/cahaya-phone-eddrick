@@ -278,10 +278,13 @@ class WAWorker {
         let row;
         try {
             await client.query('BEGIN');
+            // Only auto_dispatch=TRUE rows get worker-processed. Rows enqueued
+            // while the toggle was OFF (auto_dispatch=FALSE) sit until admin
+            // explicitly clicks "Kirim Manual", which flips the flag to TRUE.
             const { rows } = await client.query(
                 `SELECT id, phone, message_body
                  FROM whatsapp_logs
-                 WHERE status = 'QUEUED' AND priority = 'auto_reply'
+                 WHERE status = 'QUEUED' AND priority = 'auto_reply' AND auto_dispatch = TRUE
                  ORDER BY id ASC
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED`

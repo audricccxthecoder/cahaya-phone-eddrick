@@ -330,11 +330,18 @@ async function migrate() {
         read_at TIMESTAMP
       )
     `);
+    // auto_dispatch: TRUE = worker auto-sends with pacing; FALSE = waits for
+    // admin manual click. Captured at enqueue-time from form_autoreply_enabled
+    // toggle. Once a row is enqueued, its dispatch mode is sticky — flipping
+    // the toggle afterward does not affect rows already in queue.
+    await client.query(`ALTER TABLE whatsapp_logs ADD COLUMN IF NOT EXISTS auto_dispatch BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_phone ON whatsapp_logs (phone)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_status ON whatsapp_logs (status)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_created ON whatsapp_logs (created_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_retry ON whatsapp_logs (status, next_retry_at) WHERE status = 'FAILED' AND retry_count < max_retries`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_wa_msg_id ON whatsapp_logs (wa_message_id) WHERE wa_message_id IS NOT NULL`);
+    // Worker scans QUEUED + auto_dispatch=TRUE on every tick — partial index keeps it cheap
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_auto_dispatch_queue ON whatsapp_logs (priority, id) WHERE status = 'QUEUED' AND auto_dispatch = TRUE`);
     console.log('✅ Table whatsapp_logs created/verified');
 
     // WA Daily Stats — counter harian persist di DB (tidak hilang saat restart)

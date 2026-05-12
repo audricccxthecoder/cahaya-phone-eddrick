@@ -1877,6 +1877,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             const isConnected = waRes && waRes.success && ['ready', 'connected', 'open'].includes(waRes.status);
             const failedCount = (failedRes && failedRes.success) ? failedRes.count : 0;
+            const autoPending = !!(failedRes && failedRes.has_auto_pending);
+            const inHours = failedRes?.is_working_hours !== false;
 
             const titleEl = banner.querySelector('strong');
             const textEl = document.getElementById('waDisconnectText');
@@ -1889,20 +1891,26 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 titleEl.style.color = '#DC2626';
                 titleEl.textContent = 'WhatsApp Terputus!';
                 textEl.style.color = '#DC2626';
-                if (failedCount > 0) {
-                    textEl.innerHTML = `Auto-reply tidak aktif. Ada <strong>${failedCount}</strong> pesan gagal terkirim.`;
-                } else {
-                    textEl.innerHTML = 'Auto-reply dan broadcast tidak aktif.';
-                }
+                textEl.innerHTML = failedCount > 0
+                    ? `Auto-reply tidak aktif. Ada <strong>${failedCount}</strong> pesan tertahan di antrian.`
+                    : 'Auto-reply dan broadcast tidak aktif.';
             } else if (failedCount > 0) {
-                // WA connected tapi ada pesan gagal — banner KUNING
+                // Banner kuning, pesan kontekstual sesuai status antrian.
                 banner.style.display = 'block';
                 banner.style.background = 'linear-gradient(135deg,#FEF3C7,#FDE68A)';
                 banner.style.borderColor = '#F59E0B';
                 titleEl.style.color = '#92400E';
-                titleEl.textContent = 'Pesan Gagal Terkirim';
                 textEl.style.color = '#92400E';
-                textEl.innerHTML = `Ada <strong>${failedCount}</strong> pesan gagal terkirim. Buka WA Connect untuk kirim ulang.`;
+                if (!inHours) {
+                    titleEl.textContent = 'Antrian Menunggu Jam Operasional';
+                    textEl.innerHTML = `<strong>${failedCount}</strong> pesan menunggu — otomatis dikirim mulai 08:00 WITA.`;
+                } else if (autoPending) {
+                    titleEl.textContent = 'Antrian Otomatis Berjalan';
+                    textEl.innerHTML = `Sistem memproses <strong>${failedCount}</strong> pesan dengan delay anti-ban. Tombol manual nonaktif sampai antrian selesai.`;
+                } else {
+                    titleEl.textContent = 'Pesan Menunggu Manual';
+                    textEl.innerHTML = `Ada <strong>${failedCount}</strong> pesan menunggu kirim manual. Buka WA Connect untuk kirim.`;
+                }
             } else {
                 // Semua OK — sembunyikan banner
                 banner.style.display = 'none';
@@ -2278,23 +2286,110 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     // FAILED WA MESSAGES - RETRY
     // ============================================
 
+    // Polling state: which customer we're currently "sending" (spinner shown,
+    // poll every 3s until they disappear from failed list).
+    let _waManualSendingId = null;
+    let _waPollIntervalId = null;
+    const WA_POLL_TIMEOUT_MS = 15 * 60_000;  // give up after 15 min
+    let _waPollStartedAt = 0;
+
+    function _waStopPolling() {
+        if (_waPollIntervalId) { clearInterval(_waPollIntervalId); _waPollIntervalId = null; }
+        _waManualSendingId = null;
+        _waPollStartedAt = 0;
+    }
+
+    function _waStartPolling(customerId) {
+        _waManualSendingId = customerId;
+        _waPollStartedAt = Date.now();
+        if (_waPollIntervalId) clearInterval(_waPollIntervalId);
+        _waPollIntervalId = setInterval(() => {
+            if (Date.now() - _waPollStartedAt > WA_POLL_TIMEOUT_MS) {
+                _waStopPolling();
+                alert('Pengiriman manual masih berlangsung lebih dari 15 menit. Cek koneksi WA bridge atau refresh untuk lihat status.');
+                loadFailedWA();
+                return;
+            }
+            loadFailedWA();
+        }, 3000);
+    }
+
     window.loadFailedWA = async function() {
         const container = document.getElementById('failedWAContainer');
         if (!container) return;
         const res = await apiCall('/admin/wa/failed');
         if (!res || !res.success || res.count === 0) {
             container.innerHTML = '<div class="no-data" style="color:#25D366;">Semua pesan berhasil terkirim ✓</div>';
+            _waStopPolling();
             return;
         }
-        let html = `<p style="font-size:13px;color:#B91C1C;margin:0 0 12px;font-weight:600;">${res.count} pesan gagal terkirim</p>`;
+
+        // If we were polling for a customer and they're no longer in the list → done
+        if (_waManualSendingId && !res.data.some(c => c.id === _waManualSendingId)) {
+            _waStopPolling();
+        }
+
+        // Auto-queue active anywhere? If yes, all manual buttons stay disabled.
+        const autoPending = !!res.has_auto_pending;
+        const isWorkingHours = res.is_working_hours !== false;  // default true if missing
+        const wh = res.working_hours || { start: 8, end: 22, tz: 'WITA' };
+
+        // Banner reasoning. Priority: outside-hours > auto-pending > generic count.
+        let header;
+        if (!isWorkingHours) {
+            header = `<p style="font-size:13px;color:#92400E;margin:0 0 12px;font-weight:600;">${res.count} pesan menunggu — di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}). Otomatis akan jalan saat jam buka. Tombol manual nonaktif sampai jam buka.</p>`;
+        } else if (autoPending) {
+            header = `<p style="font-size:13px;color:#B45309;margin:0 0 12px;font-weight:600;">${res.count} pesan menunggu — antrian otomatis sedang berjalan, tombol manual nonaktif sampai selesai</p>`;
+        } else {
+            header = `<p style="font-size:13px;color:#B91C1C;margin:0 0 12px;font-weight:600;">${res.count} pesan gagal terkirim</p>`;
+        }
+
+        let html = header;
         html += '<div style="max-height:300px;overflow-y:auto;">';
-        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
         res.data.forEach(c => {
+            // Per-row dispatch context:
+            //   auto_dispatch=TRUE   → system akan handle, button disabled
+            //   auto_dispatch=FALSE  → admin harus klik, button enabled (kecuali ada antrian auto)
+            //   auto_dispatch=null   → no pending row at all (rare/legacy), treat sebagai manual-enabled
+            const isAuto = c.log_auto_dispatch === true;
+            const isSending = c.log_status === 'SENDING' || _waManualSendingId === c.id;
+
+            let statusBadge;
+            if (isSending) {
+                statusBadge = '<span style="background:#DBEAFE;color:#1D4ED8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Mengirim...</span>';
+            } else if (isAuto) {
+                statusBadge = '<span style="background:#FEF3C7;color:#92400E;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Antrian Otomatis</span>';
+            } else if (c.log_auto_dispatch === false) {
+                statusBadge = '<span style="background:#F3F4F6;color:#374151;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Menunggu Manual</span>';
+            } else {
+                statusBadge = '<span style="background:#FEE2E2;color:#991B1B;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Gagal</span>';
+            }
+
+            // Per spec: auto rows have button TRULY disabled (visual differentiation).
+            // Manual rows stay PRESSABLE even when blocked by out-of-hours or auto-pending —
+            // clicking produces a clear notif from backend. Only currently-sending rows
+            // get a local visual lock to prevent double-clicks during the in-flight send.
+            const disableVisual = isAuto || isSending;
+            const btnLabel = isSending ? '⏳ Mengirim...' : 'Kirim Manual';
+            const btnStyle = disableVisual
+                ? 'padding:4px 12px;font-size:11px;opacity:0.45;cursor:not-allowed;'
+                : 'padding:4px 12px;font-size:11px;';
+            const btnTitle = isAuto ? 'Sistem akan kirim otomatis'
+                : isSending ? 'Sedang dikirim'
+                : !isWorkingHours ? `Di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}) — klik untuk konfirmasi`
+                : autoPending ? 'Antrian otomatis aktif — klik untuk konfirmasi'
+                : 'Kirim manual sekarang';
+            const btnAttrs = disableVisual
+                ? `disabled title="${esc(btnTitle)}"`
+                : `onclick="retrySingleWA(${c.id})" title="${esc(btnTitle)}"`;
+
             html += `<tr>
                 <td>${esc(c.nama_lengkap)}</td>
                 <td>${esc(c.whatsapp)}</td>
                 <td><span class="badge">${esc(c.tipe || 'Belanja')}</span></td>
-                <td><button class="btn-small" style="padding:4px 12px;font-size:11px;" onclick="retrySingleWA(${c.id})">Kirim Ulang</button></td>
+                <td>${statusBadge}</td>
+                <td><button class="btn-small" style="${btnStyle}" ${btnAttrs}>${btnLabel}</button></td>
             </tr>`;
         });
         html += '</tbody></table></div>';
@@ -2302,13 +2397,23 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     };
 
     window.retrySingleWA = async function(id) {
+        if (_waManualSendingId) {
+            alert('Tunggu pengiriman manual sebelumnya selesai dulu.');
+            return;
+        }
+        // Call server first. If rejected (luar jam, antrian auto, dll), no state change,
+        // just show notif. If accepted, then start polling for completion.
         const res = await apiCall(`/admin/wa/retry/${id}`, { method: 'POST', body: '{}' });
-        alert(res?.message || 'Error');
-        loadFailedWA();
+        if (!res || !res.success) {
+            alert(res?.message || 'Gagal kirim manual.');
+            return;
+        }
+        _waStartPolling(id);
+        loadFailedWA();  // immediate render with spinner
     };
 
     window.retryAllWA = async function() {
-        if (!confirm('Kirim ulang semua pesan yang gagal?')) return;
+        if (!confirm('Promosikan SEMUA pesan menunggu manual ke antrian otomatis?\n\nWorker akan kirim satu-per-satu dengan delay anti-ban.')) return;
         const res = await apiCall('/admin/wa/retry-all', { method: 'POST', body: '{}' });
         alert(res?.message || 'Error');
         loadFailedWA();

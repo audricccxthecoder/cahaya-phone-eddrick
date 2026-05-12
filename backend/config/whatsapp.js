@@ -123,7 +123,7 @@ class WhatsAppService {
     // and respects 08:00-22:00 WITA working hours. Customer-facing form returns
     // success immediately; the actual WA send happens minutes later.
     // ============================================
-    async enqueueAutoReply(customer) {
+    async enqueueAutoReply(customer, { autoDispatch = true } = {}) {
         const formattedNumber = sanitizePhone(customer.whatsapp);
         if (!formattedNumber || !formattedNumber.startsWith('62')) {
             return { success: false, error: 'Invalid phone number' };
@@ -144,12 +144,12 @@ class WhatsAppService {
 
         try {
             const { rows } = await db.query(
-                `INSERT INTO whatsapp_logs (phone, type, message_body, status, priority)
-                 VALUES ($1, 'auto_reply', $2, 'QUEUED', 'auto_reply')
+                `INSERT INTO whatsapp_logs (phone, type, message_body, status, priority, auto_dispatch)
+                 VALUES ($1, 'auto_reply', $2, 'QUEUED', 'auto_reply', $3)
                  RETURNING id`,
-                [formattedNumber, message]
+                [formattedNumber, message, !!autoDispatch]
             );
-            return { success: true, queued: true, log_id: rows[0].id };
+            return { success: true, queued: true, log_id: rows[0].id, auto_dispatch: !!autoDispatch };
         } catch (err) {
             console.warn('[WA] enqueueAutoReply failed:', err.message);
             return { success: false, error: err.message };
