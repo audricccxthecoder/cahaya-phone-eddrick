@@ -27,6 +27,62 @@ function validatePasswordStrength(pw) {
 
 const VALID_STATUSES = ['New', 'Contacted', 'Follow Up', 'Completed', 'Inactive'];
 
+async function _syncCustomerSummary(customerId) {
+    const { rows } = await db.query(
+        `SELECT merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, tahu_dari, source
+         FROM purchases
+         WHERE customer_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [customerId]
+    );
+
+    if (rows.length === 0) {
+        await db.query(
+            `UPDATE customers SET merk_unit = NULL, tipe_unit = NULL, harga = NULL, qty = NULL,
+                nama_sales = NULL, metode_pembayaran = NULL, tahu_dari = NULL,
+                updated_at = NOW()
+             WHERE id = $1`,
+            [customerId]
+        );
+        return;
+    }
+
+    const latest = rows[0];
+    await db.query(
+        `UPDATE customers SET
+             merk_unit = $1,
+             tipe_unit = $2,
+             harga = $3,
+             qty = $4,
+             nama_sales = $5,
+             metode_pembayaran = $6,
+             tahu_dari = $7,
+             source = $8,
+             updated_at = NOW()
+         WHERE id = $9`,
+        [latest.merk_unit, latest.tipe_unit, latest.harga, latest.qty,
+         latest.nama_sales, latest.metode_pembayaran, latest.tahu_dari, latest.source,
+         customerId]
+    );
+}
+
+async function _trimCustomerAutoReplyQueue(phone, maxPending) {
+    const normalizedPhone = sanitizePhone(phone);
+    if (!normalizedPhone || maxPending < 0) return;
+
+    const { rows } = await db.query(
+        `SELECT id FROM whatsapp_logs
+         WHERE phone = $1 AND type = 'auto_reply' AND status IN ('QUEUED','FAILED')
+         ORDER BY id ASC`,
+        [normalizedPhone]
+    );
+
+    if (rows.length <= maxPending) return;
+    const toDelete = rows.slice(maxPending).map(r => r.id);
+    await db.query(`DELETE FROM whatsapp_logs WHERE id = ANY($1::int[])`, [toDelete]);
+}
+
 // ============================================
 // ANTI-SPAM: Message variation helpers
 // ============================================
@@ -463,6 +519,163 @@ exports.getCustomerById = async (req, res) => {
             success: false,
             message: 'Gagal mengambil data customer'
         });
+    }
+};
+
+/**
+ * Update customer detail fields
+ * PATCH /api/admin/customers/:id
+ */
+exports.updateCustomer = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const fields = {};
+        const allowed = ['nama_lengkap', 'nama_sales', 'alamat', 'tanggal_lahir', 'metode_pembayaran', 'tahu_dari', 'source', 'tipe', 'status', 'catatan'];
+        const params = [];
+        let index = 1;
+
+        for (const key of allowed) {
+            if (req.body[key] !== undefined) {
+                fields[key] = req.body[key] || null;
+                params.push(fields[key]);
+            }
+        }
+
+        if (Object.keys(fields).length === 0) {
+            return res.status(400).json({ success: false, message: 'Tidak ada field untuk diperbarui' });
+        }
+
+        if (fields.status && !VALID_STATUSES.includes(fields.status)) {
+            return res.status(400).json({ success: false, message: `Status tidak valid. Pilihan: ${VALID_STATUSES.join(', ')}` });
+        }
+
+        const sets = Object.keys(fields).map((key, idx) => `${key} = $${idx + 1}`);
+        params.push(id);
+
+        const { rowCount } = await db.query(
+            `UPDATE customers SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${params.length}`,
+            params
+        );
+
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+        }
+
+        const { rows } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
+        res.json({ success: true, message: 'Customer berhasil diperbarui', data: rows[0] });
+    } catch (error) {
+        console.error('❌ Update customer error:', error);
+        res.status(500).json({ success: false, message: 'Gagal memperbarui customer' });
+    }
+};
+
+/**
+ * Replace customer purchase list and reconcile queue counts
+ * PUT /api/admin/customers/:id/purchases
+ * Body: { purchases: [{ id?, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, deleted? }] }
+ */
+exports.saveCustomerPurchases = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { purchases } = req.body;
+        if (!Array.isArray(purchases)) {
+            return res.status(400).json({ success: false, message: 'Field purchases harus dalam format array' });
+        }
+
+        const { rows: customerRows } = await db.query('SELECT id, whatsapp FROM customers WHERE id = $1', [id]);
+        if (customerRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+        }
+
+        const customerPhone = customerRows[0].whatsapp;
+        const existingRows = await db.query('SELECT id FROM purchases WHERE customer_id = $1', [id]);
+        const existingIds = new Set(existingRows.rows.map(r => r.id));
+
+        const inserts = [];
+        const updates = [];
+        const deletes = [];
+
+        for (const item of purchases) {
+            if (item.id && existingIds.has(item.id)) {
+                if (item.deleted) {
+                    deletes.push(item.id);
+                } else {
+                    updates.push(item);
+                }
+            } else if (!item.id && !item.deleted) {
+                inserts.push(item);
+            }
+        }
+
+        const client = await db.connect();
+        try {
+            await client.query('BEGIN');
+
+            for (const purchase of updates) {
+                const parsedHarga = purchase.harga !== undefined && purchase.harga !== null && purchase.harga !== ''
+                    ? parseFloat(purchase.harga)
+                    : null;
+                const parsedQty = purchase.qty !== undefined && purchase.qty !== null && purchase.qty !== ''
+                    ? parseInt(purchase.qty, 10)
+                    : 1;
+
+                await client.query(
+                    `UPDATE purchases SET merk_unit = $1, tipe_unit = $2, harga = $3, qty = $4,
+                        nama_sales = $5, metode_pembayaran = $6, source = $7
+                     WHERE id = $8 AND customer_id = $9`,
+                    [purchase.merk_unit || null, purchase.tipe_unit || null, parsedHarga, parsedQty,
+                     purchase.nama_sales || null, purchase.metode_pembayaran || null, purchase.source || null,
+                     purchase.id, id]
+                );
+            }
+
+            if (deletes.length > 0) {
+                await client.query(`DELETE FROM purchases WHERE id = ANY($1::int[]) AND customer_id = $2`, [deletes, id]);
+            }
+
+            for (const purchase of inserts) {
+                const parsedHarga = purchase.harga !== undefined && purchase.harga !== null && purchase.harga !== ''
+                    ? parseFloat(purchase.harga)
+                    : null;
+                const parsedQty = purchase.qty !== undefined && purchase.qty !== null && purchase.qty !== ''
+                    ? parseInt(purchase.qty, 10)
+                    : 1;
+
+                await client.query(
+                    `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    [id, purchase.merk_unit || null, purchase.tipe_unit || null, parsedHarga, parsedQty,
+                     purchase.nama_sales || null, purchase.metode_pembayaran || null, purchase.source || null]
+                );
+            }
+
+            await _syncCustomerSummary(id);
+            const remainingPurchases = purchases.filter(p => !p.deleted).length;
+            await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases);
+
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        const { rows: updatedCustomer } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
+        const { rows: updatedPurchases } = await db.query(
+            `SELECT id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, created_at
+             FROM purchases WHERE customer_id = $1 ORDER BY created_at DESC`,
+            [id]
+        );
+
+        res.json({
+            success: true,
+            message: 'Data pembelian customer berhasil disimpan',
+            data: { customer: updatedCustomer[0], purchases: updatedPurchases }
+        });
+    } catch (error) {
+        console.error('❌ Save customer purchases error:', error);
+        res.status(500).json({ success: false, message: 'Gagal menyimpan data pembelian' });
     }
 };
 

@@ -1159,6 +1159,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     const rowsPerPage = 15;
     let filteredCustomers = [];
 
+    let detailCustomerDraft = null;
+
     window.switchCustomerTab = function(tab) {
         activeTab = tab;
         currentPage = 1;
@@ -1427,123 +1429,65 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         const purchaseCount = customer.purchase_count || 0;
 
         // Purchase history section — always show if there are purchases
-        let purchaseHtml = '';
-        if (purchaseCount > 0) {
-            const totalUnit = purchases.reduce((sum, p) => sum + (Number(p.qty) || 1), 0);
-            const totalOmzet = purchases.reduce((sum, p) => sum + ((Number(p.harga) || 0) * (Number(p.qty) || 1)), 0);
-
-            const purchaseSummary = purchases.map((p, i) => {
-                const q = Number(p.qty) || 1;
-                const item = (p.merk_unit || '-') + (p.tipe_unit ? ' ' + p.tipe_unit : '');
-                const metode = (p.metode_pembayaran || '').trim();
-                // Small inline metode tag right after the unit name — compact, no dedicated row
-                const metodeTag = metode
-                    ? ` <span style="font-size:11px;color:#8C8078;font-weight:400;">· ${esc(metode)}</span>`
-                    : '';
-                return `
-                <div style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid #EDE8E3;font-size:13px;">
-                    <div style="color:#5C534B;">${formatTanggal(p.created_at)}</div>
-                    <div style="font-weight:600;color:#1A1412;">${item}${q > 1 ? ` <span style="background:#B91C1C;color:#fff;padding:1px 6px;border-radius:6px;font-size:11px;margin-left:4px;">${q} unit</span>` : ''}${metodeTag}</div>
-                </div>
-            `;
-            }).join('');
-
-            purchaseHtml = `
-                <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
-                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                        <h4 style="margin:0;font-size:15px;color:#1A1412;">Riwayat Pembelian</h4>
-                        <span style="background:#B91C1C;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;">${purchaseCount}x transaksi</span>
-                    </div>
-                    <div style="margin-bottom:16px;padding:14px 16px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;">
-                        <div style="font-size:13px;font-weight:600;color:#92400E;margin-bottom:8px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                            <span>Ringkasan Pembelian (${totalUnit} unit total):</span>
-                            <span>Total: ${formatRpDetail(totalOmzet)}</span>
-                        </div>
-                        ${purchaseSummary}
-                    </div>
-                    <div style="overflow-x:auto;border:1px solid #EDE8E3;border-radius:8px;">
-                        <table style="width:100%;font-size:13px;border-collapse:collapse;">
-                            <thead><tr style="background:#FAFAF8;">
-                                <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Tanggal</th>
-                                <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Merk HP</th>
-                                <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Tipe HP</th>
-                                <th style="text-align:center;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Qty</th>
-                                <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Harga Satuan</th>
-                                <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Subtotal</th>
-                                <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Sales</th>
-                            </tr></thead>
-                            <tbody>
-                                ${purchases.map((p, i) => {
-                                    const q = Number(p.qty) || 1;
-                                    const h = Number(p.harga) || 0;
-                                    return `
-                                    <tr style="background:${i % 2 === 0 ? '#fff' : '#FAFAF8'};">
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;">${formatTanggal(p.created_at)}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:600;color:#B91C1C;">${esc(p.merk_unit || '-')}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;font-weight:500;">${esc(p.tipe_unit || '-')}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;font-weight:600;">${q}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:500;">${h ? formatRpDetail(h) : '-'}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;font-weight:600;color:#B91C1C;">${h ? formatRpDetail(h * q) : '-'}</td>
-                                        <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;">${esc(p.nama_sales || '-')}</td>
-                                    </tr>
-                                `;
-                                }).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
-        }
+        let purchaseHtml = '<div id="purchaseEditor"></div>';
 
         detail.innerHTML = `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
                 <div class="detail-group">
                     <div class="detail-label">Nama Lengkap</div>
-                    <div class="detail-value">${esc(customer.nama_lengkap)}</div>
+                    <div class="detail-value"><input id="detailNamaLengkap" type="text" value="${esc(customer.nama_lengkap)}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">WhatsApp</div>
                     <div class="detail-value" style="display:flex;align-items:center;gap:8px;">
-                        ${esc(customer.whatsapp)}
-                        <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Chat</a>
+                        <input id="detailWhatsApp" type="text" value="${esc(customer.whatsapp)}" disabled style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;background:#F8FAFC;" />
+                        <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Chat</a>
                     </div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Tanggal Lahir</div>
-                    <div class="detail-value">${tanggalLahir}</div>
+                    <div class="detail-value"><input id="detailTanggalLahir" type="date" value="${customer.tanggal_lahir || ''}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Alamat</div>
-                    <div class="detail-value">${esc(customer.alamat || '-')}</div>
+                    <div class="detail-value"><textarea id="detailAlamat" rows="2" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;resize:vertical;">${esc(customer.alamat || '')}</textarea></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Produk</div>
-                    <div class="detail-value">${esc((customer.merk_unit || '') + (customer.tipe_unit ? ' ' + customer.tipe_unit : '') || '-')}</div>
+                    <div class="detail-value"><input id="detailMerkUnit" type="text" value="${esc(customer.merk_unit || '')}" placeholder="Merk" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tipe</div>
+                    <div class="detail-value"><input id="detailTipeUnit" type="text" value="${esc(customer.tipe_unit || '')}" placeholder="Tipe" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Harga</div>
-                    <div class="detail-value">${harga}</div>
+                    <div class="detail-value"><input id="detailHarga" type="number" step="0.01" value="${customer.harga || ''}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Qty</div>
+                    <div class="detail-value"><input id="detailQty" type="number" min="1" value="${customer.qty || 1}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Metode Pembayaran</div>
-                    <div class="detail-value">${esc(customer.metode_pembayaran || '-')}</div>
+                    <div class="detail-value"><input id="detailMetodePembayaran" type="text" value="${esc(customer.metode_pembayaran || '')}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Sales</div>
-                    <div class="detail-value">${esc(customer.nama_sales || '-')}</div>
+                    <div class="detail-value"><input id="detailNamaSales" type="text" value="${esc(customer.nama_sales || '')}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Tahu dari</div>
-                    <div class="detail-value">${esc(customer.tahu_dari || '-')}</div>
+                    <div class="detail-value"><input id="detailTahuDari" type="text" value="${esc(customer.tahu_dari || '')}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Source</div>
-                    <div class="detail-value"><span class="badge ${sourceClass}">${esc(customer.source)}</span></div>
+                    <div class="detail-value"><input id="detailSource" type="text" value="${esc(customer.source || '')}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Status</div>
                     <div class="detail-value">
-                        <select class="status-select ${statusClass}" onchange="updateStatus(${customer.id}, this.value, this)">
+                        <select id="detailStatus" class="status-select ${statusClass}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;">
                             ${['New','Contacted','Follow Up','Completed','Inactive'].map(s =>
                                 `<option value="${s}" ${customer.status === s ? 'selected' : ''}>${s}</option>`
                             ).join('')}
@@ -1551,7 +1495,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     </div>
                 </div>
                 <div class="detail-group">
-                    <div class="detail-label">Tipe</div>
+                    <div class="detail-label">Tipe Customer</div>
                     <div class="detail-value"><span style="background:${customer.tipe === 'Chat Only' ? 'rgba(37,99,235,0.1);color:#2563EB' : 'rgba(185,28,28,0.08);color:#B91C1C'};padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600;">${customer.tipe || 'Belanja'}</span></div>
                 </div>
                 <div class="detail-group">
@@ -1562,6 +1506,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <div class="detail-label">Terdaftar</div>
                     <div class="detail-value">${date}</div>
                 </div>
+            </div>
+            <div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+                <button class="btn-primary" onclick="saveCustomerDetail(${customer.id})">Simpan Perubahan</button>
+                <span id="detailSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
             </div>
             <!-- Status Legend -->
             <div style="margin-top:16px;padding:12px 16px;background:#FAFAF8;border:1px solid #EDE8E3;border-radius:8px;">
@@ -1574,10 +1522,180 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <span><strong style="color:#8C8078;">Inactive</strong> = Tidak aktif</span>
                 </div>
             </div>
-            ${purchaseHtml}
+            <div id="purchaseEditor"></div>
         `;
 
         modal.classList.add('show');
+        renderPurchaseEditor(customer);
+    }
+
+    function renderPurchaseEditor(customer) {
+        detailCustomerDraft = {
+            id: customer.id,
+            purchases: (customer.purchases || []).map(p => ({
+                id: p.id,
+                merk_unit: p.merk_unit || '',
+                tipe_unit: p.tipe_unit || '',
+                harga: p.harga || '',
+                qty: p.qty || 1,
+                nama_sales: p.nama_sales || '',
+                metode_pembayaran: p.metode_pembayaran || '',
+                source: p.source || '',
+                deleted: false
+            }))
+        };
+
+        const editor = document.getElementById('purchaseEditor');
+        if (!editor) return;
+
+        const rowsHtml = detailCustomerDraft.purchases.map((p, index) => {
+            return `
+                <tr data-purchase-id="${p.id}" data-index="${index}">
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-merk" type="text" value="${esc(p.merk_unit)}" placeholder="Merk" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-tipe" type="text" value="${esc(p.tipe_unit)}" placeholder="Tipe" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;"><input class="purchase-qty" type="number" min="1" value="${esc(p.qty)}" style="width:80px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:center;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;"><input class="purchase-harga" type="number" step="0.01" value="${esc(p.harga)}" placeholder="0" style="width:110px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:right;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-sales" type="text" value="${esc(p.nama_sales)}" placeholder="Sales" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-payment" type="text" value="${esc(p.metode_pembayaran)}" placeholder="Pembayaran" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;">
+                        <button class="btn-small" onclick="deletePurchaseRow(this)" style="background:#FECACA;color:#991B1B;">Hapus</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+
+        editor.innerHTML = `
+            <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
+                    <div style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</div>
+                    <button class="btn-primary" onclick="addPurchaseRow()" type="button">Tambah Pembelian</button>
+                </div>
+                <div style="overflow-x:auto;border:1px solid #EDE8E3;border-radius:8px;">
+                    <table style="width:100%;font-size:13px;border-collapse:collapse;">
+                        <thead><tr style="background:#FAFAF8;">
+                            <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;min-width:140px;">Merk HP</th>
+                            <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;min-width:140px;">Tipe HP</th>
+                            <th style="text-align:center;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Qty</th>
+                            <th style="text-align:right;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Harga</th>
+                            <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Sales</th>
+                            <th style="text-align:left;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Pembayaran</th>
+                            <th style="text-align:center;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Aksi</th>
+                        </tr></thead>
+                        <tbody id="purchaseEditorRows">
+                            ${rowsHtml}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+
+    window.addPurchaseRow = function() {
+        if (!detailCustomerDraft) return;
+        const nextIndex = detailCustomerDraft.purchases.length;
+        detailCustomerDraft.purchases.push({
+            id: null,
+            merk_unit: '',
+            tipe_unit: '',
+            harga: '',
+            qty: 1,
+            nama_sales: '',
+            metode_pembayaran: '',
+            source: '',
+            deleted: false
+        });
+
+        const rowsContainer = document.getElementById('purchaseEditorRows');
+        if (!rowsContainer) return;
+
+        const rowHtml = `
+            <tr data-purchase-id="" data-index="${nextIndex}">
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-merk" type="text" value="" placeholder="Merk" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-tipe" type="text" value="" placeholder="Tipe" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;"><input class="purchase-qty" type="number" min="1" value="1" style="width:80px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:center;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;"><input class="purchase-harga" type="number" step="0.01" value="" placeholder="0" style="width:110px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:right;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-sales" type="text" value="" placeholder="Sales" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-payment" type="text" value="" placeholder="Pembayaran" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
+                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;"><button class="btn-small" onclick="deletePurchaseRow(this)" style="background:#FECACA;color:#991B1B;">Hapus</button></td>
+            </tr>
+        `;
+        rowsContainer.insertAdjacentHTML('beforeend', rowHtml);
+    }
+
+    window.deletePurchaseRow = function(button) {
+        const row = button.closest('tr');
+        if (!row) return;
+        const purchaseId = row.dataset.purchaseId;
+        if (purchaseId) {
+            row.dataset.deleted = 'true';
+            row.style.display = 'none';
+        } else {
+            row.remove();
+        }
+    }
+
+    window.saveCustomerDetail = async function(customerId) {
+        if (!customerId) return;
+        const feedback = document.getElementById('detailSaveFeedback');
+        if (feedback) feedback.textContent = '';
+
+        const payload = {
+            nama_lengkap: document.getElementById('detailNamaLengkap')?.value.trim(),
+            nama_sales: document.getElementById('detailNamaSales')?.value.trim(),
+            alamat: document.getElementById('detailAlamat')?.value.trim(),
+            tanggal_lahir: document.getElementById('detailTanggalLahir')?.value || null,
+            metode_pembayaran: document.getElementById('detailMetodePembayaran')?.value.trim(),
+            tahu_dari: document.getElementById('detailTahuDari')?.value.trim(),
+            source: document.getElementById('detailSource')?.value.trim(),
+            status: document.getElementById('detailStatus')?.value
+        };
+
+        const purchaseRows = Array.from(document.querySelectorAll('#purchaseEditorRows tr'));
+        const purchases = purchaseRows.map(row => {
+            const deleted = row.dataset.deleted === 'true';
+            const id = row.dataset.purchaseId ? Number(row.dataset.purchaseId) : null;
+            return {
+                id,
+                deleted,
+                merk_unit: row.querySelector('.purchase-merk')?.value.trim() || null,
+                tipe_unit: row.querySelector('.purchase-tipe')?.value.trim() || null,
+                harga: row.querySelector('.purchase-harga')?.value || null,
+                qty: row.querySelector('.purchase-qty')?.value || 1,
+                nama_sales: row.querySelector('.purchase-sales')?.value.trim() || null,
+                metode_pembayaran: row.querySelector('.purchase-payment')?.value.trim() || null,
+                source: row.querySelector('.purchase-payment')?.value.trim() || null
+            };
+        }).filter(item => {
+            if (item.deleted && item.id) return true;
+            if (item.deleted) return false;
+            return item.merk_unit || item.tipe_unit || item.harga || item.qty;
+        });
+
+        try {
+            const customerRes = await apiCall(`/admin/customers/${customerId}`, {
+                method: 'PATCH',
+                body: JSON.stringify(payload)
+            });
+            if (!customerRes || !customerRes.success) {
+                throw new Error(customerRes?.message || 'Gagal menyimpan data customer');
+            }
+
+            const purchasesRes = await apiCall(`/admin/customers/${customerId}/purchases`, {
+                method: 'PUT',
+                body: JSON.stringify({ purchases })
+            });
+            if (!purchasesRes || !purchasesRes.success) {
+                throw new Error(purchasesRes?.message || 'Gagal menyimpan data pembelian');
+            }
+
+            if (feedback) feedback.textContent = 'Perubahan tersimpan.';
+            if (typeof loadCustomers === 'function') loadCustomers();
+            showCustomerDetail({ ...customerRes.data, purchases: purchasesRes.data.purchases });
+        } catch (error) {
+            console.error('saveCustomerDetail error:', error);
+            if (feedback) feedback.textContent = 'Gagal menyimpan perubahan.';
+            alert(error.message || 'Gagal menyimpan perubahan.');
+        }
     }
 
     window.closeModal = function() {

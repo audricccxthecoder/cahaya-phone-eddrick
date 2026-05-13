@@ -126,6 +126,8 @@ router.get('/admin/customers/export', authMiddleware, adminController.exportCont
 router.get('/admin/customers/export/vcf', authMiddleware, adminController.exportVCard);
 router.patch('/admin/customers/:id/status', authMiddleware, auditLog('update_customer_status'), adminController.updateCustomerStatus);
 router.patch('/admin/customers/:id/catatan', authMiddleware, auditLog('update_customer_catatan'), adminController.updateCustomerCatatan);
+router.patch('/admin/customers/:id', authMiddleware, auditLog('update_customer'), adminController.updateCustomer);
+router.put('/admin/customers/:id/purchases', authMiddleware, auditLog('update_customer_purchases'), adminController.saveCustomerPurchases);
 router.get('/admin/customers/:id', authMiddleware, adminController.getCustomerById);
 
 // Messages
