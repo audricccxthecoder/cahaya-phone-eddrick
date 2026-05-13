@@ -1780,7 +1780,7 @@ exports.getFailedWA = async (req, res) => {
                  WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
                  ORDER BY id DESC LIMIT 1
              ) w ON TRUE
-             WHERE c.wa_sent IS NOT TRUE
+             WHERE c.wa_sent IS NOT TRUE AND c.tipe = 'Belanja'
              ORDER BY c.created_at DESC`
         );
 

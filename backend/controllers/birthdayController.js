@@ -8,6 +8,10 @@ const whatsappService = require('../config/whatsapp');
 
 const DEFAULT_MESSAGE = `Halo Kak {nama}! 🎂🎉\n\nSelamat Ulang Tahun dari kami *CAHAYA PHONE* Gorontalo!\n\nSemoga panjang umur, sehat selalu, dan diberkahi rezeki yang melimpah. Terima kasih sudah menjadi pelanggan setia kami.\n\nSalam hangat,\nCahaya Phone 🙏`;
 
+// Module-level lock: only one manual birthday send in progress at a time.
+// Prevents two admins from simultaneously clicking "Kirim" and double-sending.
+let manualBirthdaySendInProgress = false;
+
 // Working hours (WITA)
 const WORK_START_HOUR = 8;
 const WORK_END_HOUR = 22;
@@ -149,12 +153,22 @@ exports.getTodayBirthdays = async (req, res) => {
         );
         const autoSend = autoResult.rows.length > 0 ? autoResult.rows[0].value === 'true' : true;
 
+        // Check if any auto birthday items are still pending/sending — frontend uses this
+        // to decide whether to disable manual "Kirim" buttons (same as has_auto_pending in WA failed).
+        const { rows: autoPending } = await db.query(`
+            SELECT COUNT(*)::int AS cnt FROM birthday_greetings
+            WHERE greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+              AND status IN ('pending', 'sending')
+              AND dispatch_mode = 'auto'
+        `);
+
         res.json({
             success: true,
             data: {
                 customers,
                 message: customMessage,
                 autoSend,
+                has_auto_pending: autoPending[0].cnt > 0,
                 is_working_hours: isWorkingHoursWITA(),
                 working_hours: { start: WORK_START_HOUR, end: WORK_END_HOUR, tz: 'WITA' },
                 today: new Date().toISOString().split('T')[0]
@@ -168,7 +182,8 @@ exports.getTodayBirthdays = async (req, res) => {
 
 /**
  * API: Kirim ucapan ke 1 customer (manual trigger dari admin).
- * LOGIKA KETAT: Prioritas AUTO, Jam Operasional, Delay Muter-Muter di layar
+ * LOGIKA KETAT: Prioritas AUTO, Jam Operasional, Delay Muter-Muter di layar,
+ * satu manual dalam satu waktu (locked).
  */
 exports.sendGreeting = async (req, res) => {
     try {
@@ -179,37 +194,54 @@ exports.sendGreeting = async (req, res) => {
         if (!isWorkingHoursWITA()) {
             return res.status(400).json({
                 success: false,
+                outside_working_hours: true,
                 message: `Di luar jam operasional (${WORK_START_HOUR}:00–${WORK_END_HOUR}:00 WITA). Tidak dapat mengirim manual.`
             });
         }
 
         // GATE 2: PRIORITAS OTOMATIS (AUTO)
-        // Cek apakah masih ada antrian 'pending' dengan mode 'auto' hari ini
+        // Cek apakah masih ada antrian 'pending'/'sending' dengan mode 'auto' hari ini
         const pendingAuto = await db.query(`
             SELECT 1 FROM birthday_greetings 
-            WHERE status = 'pending' AND dispatch_mode = 'auto' 
+            WHERE status IN ('pending', 'sending') AND dispatch_mode = 'auto' 
             AND greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar')) LIMIT 1
         `);
-        
         if (pendingAuto.rows.length > 0) {
-            return res.status(400).json({
+            return res.status(409).json({
                 success: false,
-                message: 'Menolak: Masih mendahulukan antrean otomatis! Selesaikan antrean otomatis (atau tunggu sistem menyelesaikannya) sebelum menekan tombol manual.'
+                message: 'Tidak bisa kirim sekarang — masih ada antrian otomatis yang belum selesai. Tunggu sampai sistem menyelesaikannya, baru tombol manual bisa digunakan.'
             });
         }
 
-        // GATE 3: EKSEKUSI DENGAN DELAY (Loading Muter-muter di Frontend)
-        // Kita tahan HTTP response ini selama 5-15 detik agar admin muter-muter nunggu
-        const delay = Math.floor(Math.random() * (15000 - 5000 + 1)) + 5000;
-        await new Promise(r => setTimeout(r, delay));
-
-        // Re-check jam operasional (jaga-jaga delay muter-muter ngelewatin batas jam tutup)
-        if (!isWorkingHoursWITA()) {
-            return res.status(400).json({ success: false, message: 'Batal terkirim, waktu operasional keburu habis saat loading antrean.' });
+        // GATE 3: SATU MANUAL SEKALIGUS
+        // Mencegah dua admin klik bersamaan dan double-send ke customer yang sama.
+        if (manualBirthdaySendInProgress) {
+            return res.status(409).json({
+                success: false,
+                message: 'Pengiriman manual sedang berlangsung. Tunggu sebentar hingga loading selesai, lalu coba kirim berikutnya.'
+            });
         }
 
-        // Eksekusi kirim pesan
+        manualBirthdaySendInProgress = true;
+
+        // GATE 4: DELAY MUTER-MUTER (Loading di layar admin)
+        // Tahan HTTP response 5–15 detik agar terasa humanlike dan tidak spam.
+        const delay = randInt(5_000, 15_000);
+        await new Promise(r => setTimeout(r, delay));
+
+        // Re-check jam operasional (jaga-jaga delay muter-muter ngelewatin jam tutup)
+        if (!isWorkingHoursWITA()) {
+            manualBirthdaySendInProgress = false;
+            return res.status(400).json({
+                success: false,
+                outside_working_hours: true,
+                message: 'Batal terkirim, waktu operasional keburu habis saat loading antrian.'
+            });
+        }
+
+        // EKSEKUSI KIRIM
         const result = await sendBirthdayMessage(customer_id);
+        manualBirthdaySendInProgress = false;
 
         if (result.success) {
             res.json({ success: true, message: 'Pesan ulang tahun berhasil terkirim manual!' });
@@ -218,69 +250,58 @@ exports.sendGreeting = async (req, res) => {
         }
 
     } catch (err) {
+        manualBirthdaySendInProgress = false;
         console.error('[Birthday] Error sending greeting:', err.message);
         if (!res.headersSent) res.status(500).json({ success: false, message: err.message });
     }
 };
 
 /**
- * API: Kirim ucapan ke semua customer yang ulang tahun hari ini
+ * API: Masukkan semua customer ulang tahun hari ini ke antrian (re-enqueue).
+ * Worker (wa-worker._processBirthdayQueue) yang memproses satu per satu dengan
+ * delay + break anti-ban. Endpoint ini tidak mengirim langsung agar tidak
+ * double-send dengan worker yang berjalan paralel.
  */
 exports.sendAllGreetings = async (req, res) => {
     try {
         if (!isWorkingHoursWITA()) {
             return res.status(400).json({
                 success: false,
+                outside_working_hours: true,
                 message: `Di luar jam operasional (${WORK_START_HOUR}:00–${WORK_END_HOUR}:00 WITA). Coba lagi di jam kerja.`
             });
         }
 
-        const customers = await getBirthdayToday();
-        const pending = customers.filter(c => !c.greeting_id || c.greeting_status === 'failed');
+        // Re-enqueue semua yang belum dikirim hari ini (failed → kembali ke pending).
+        // enqueueTodayBirthdays pakai ON CONFLICT DO NOTHING jadi tidak overwrite yang
+        // sudah 'sent'. Untuk yang 'failed' kita reset manual di sini.
+        await db.query(`
+            UPDATE birthday_greetings
+            SET status = 'pending', error = NULL, updated_at = NOW()
+            WHERE greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+              AND status = 'failed'
+        `);
+        await enqueueTodayBirthdays();  // insert yang belum ada sama sekali
 
-        if (pending.length === 0) {
-            return res.json({ success: true, message: 'Tidak ada ucapan yang perlu dikirim', sent: 0 });
+        // Hitung berapa yang masuk antrian
+        const { rows } = await db.query(`
+            SELECT COUNT(*)::int AS cnt FROM birthday_greetings
+            WHERE greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+              AND status = 'pending'
+        `);
+        const queued = rows[0]?.cnt || 0;
+
+        if (queued === 0) {
+            return res.json({ success: true, message: 'Semua ucapan sudah terkirim hari ini.', queued: 0 });
         }
 
-        // Respond immediately so admin tab doesn't hang for hours on 50+ customers
         res.json({
             success: true,
-            message: `Memproses ${pending.length} ucapan di background. Delay & break diacak harian. Pantau di Riwayat.`,
-            queued: pending.length
+            message: `${queued} ucapan masuk antrian. Worker otomatis memproses satu per satu dengan delay & break harian. Pantau di halaman ini — nama akan hilang saat terkirim.`,
+            queued
         });
-
-        // Background loop — runs until done or working hours close
-        (async () => {
-            let sent = 0, failed = 0, skipped = 0, sinceBreak = 0;
-            const breakEvery = birthdayBreakEvery();
-            for (const customer of pending) {
-                if (!isWorkingHoursWITA()) {
-                    console.log(`[Birthday] ⏸ Stopped at ${sent} sent — outside working hours`);
-                    skipped = pending.length - sent - failed;
-                    break;
-                }
-
-                const result = await sendBirthdayMessage(customer.id);
-                if (result.success) {
-                    sent++;
-                    sinceBreak++;
-                } else {
-                    failed++;
-                }
-
-                if (sinceBreak >= breakEvery) {
-                    const breakMs = nextBirthdayBreakMs();
-                    console.log(`[Birthday] ☕ Break ${Math.round(breakMs / 60_000)} min after ${sent} sent`);
-                    await new Promise(r => setTimeout(r, breakMs));
-                    sinceBreak = 0;
-                    continue;
-                }
-                await new Promise(r => setTimeout(r, nextBirthdayDelayMs()));
-            }
-            console.log(`[Birthday] Manual run done: ${sent} sent, ${failed} failed, ${skipped} skipped`);
-        })().catch(err => console.error('[Birthday] Manual run crashed:', err.message));
     } catch (err) {
-        console.error('[Birthday] Error sending all greetings:', err.message);
+        console.error('[Birthday] Error sendAllGreetings:', err.message);
         if (!res.headersSent) res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -441,59 +462,23 @@ async function sendBirthdayMessage(customerId) {
 }
 
 /**
- * CRON: Dipanggil otomatis tiap pagi — cek & kirim birthday greetings
+ * CRON: Dipanggil otomatis tiap pagi (09:00 WITA via scheduler di app.js).
+ * Tugasnya hanya MEMASUKKAN customer birthday hari ini ke antrian.
+ * Pengiriman sebenarnya dilakukan oleh wa-worker._processBirthdayQueue()
+ * yang berjalan setiap 15 detik — ini mencegah double-send antara cron dan worker.
  */
 exports.cronCheckBirthdays = async function() {
-    console.log('[Birthday] 🎂 Cron check started...');
+    console.log('[Birthday] 🎂 Cron enqueue started...');
     try {
-        // Cek apakah auto-send aktif
-        const autoResult = await db.query(
-            `SELECT value FROM app_settings WHERE key = 'birthday_auto_send'`
-        );
-        const autoSend = autoResult.rows.length === 0 || autoResult.rows[0].value !== 'false';
+        await enqueueTodayBirthdays();
 
-        if (!autoSend) {
-            console.log('[Birthday] Auto-send disabled, skipping');
-            return;
-        }
-
-        const customers = await getBirthdayToday();
-        const pending = customers.filter(c => !c.greeting_id || c.greeting_status === 'failed');
-
-        if (pending.length === 0) {
-            console.log('[Birthday] No birthdays today or all already sent');
-            return;
-        }
-
-        console.log(`[Birthday] Found ${pending.length} birthday(s) today!`);
-
-        let sent = 0, failed = 0, sinceBreak = 0;
-        const breakEvery = birthdayBreakEvery();
-        for (const customer of pending) {
-            if (!isWorkingHoursWITA()) {
-                console.log(`[Birthday] ⏸ Cron stopped at ${sent} sent — outside working hours ${WORK_START_HOUR}-${WORK_END_HOUR} WITA`);
-                break;
-            }
-
-            const result = await sendBirthdayMessage(customer.id);
-            if (result.success) {
-                sent++;
-                sinceBreak++;
-            } else {
-                failed++;
-            }
-
-            if (sinceBreak >= breakEvery) {
-                const breakMs = nextBirthdayBreakMs();
-                console.log(`[Birthday] ☕ Cron break ${Math.round(breakMs / 60_000)} min after ${sent} sent`);
-                await new Promise(r => setTimeout(r, breakMs));
-                sinceBreak = 0;
-                continue;
-            }
-            await new Promise(r => setTimeout(r, nextBirthdayDelayMs()));
-        }
-
-        console.log(`[Birthday] ✅ Cron check completed: ${sent} sent, ${failed} failed`);
+        // Hitung yang masuk antrian hari ini
+        const { rows } = await db.query(`
+            SELECT COUNT(*)::int AS cnt FROM birthday_greetings
+            WHERE greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+              AND status IN ('pending', 'sending', 'sent')
+        `);
+        console.log(`[Birthday] ✅ Cron done — ${rows[0]?.cnt || 0} total birthday record(s) for today. Worker will process 'pending' rows automatically.`);
     } catch (err) {
         console.error('[Birthday] Cron error:', err.message);
     }

@@ -152,6 +152,12 @@ class WAWorker {
         this.autoReplyBreakUntil = 0;
         this.nextAutoReplyAllowedAt = 0;
 
+        // Birthday queue state (separate pacing — never blocks broadcast or auto-reply)
+        this.birthdayMsgsSinceBreak = 0;
+        this.birthdayBreakUntil = 0;
+        this.nextBirthdayAllowedAt = 0;
+        this.birthdayNextBreakAt = 20;   // will be rerolled on first _ensureDailyProfile
+
         // Daily anti-ban profile — re-rolled every day in WITA time. All delay/break
         // ranges are SAMPLED ONCE PER DAY from the ranges above, so today's tempo
         // never matches yesterday's. A spider that learns "every 5 min, break at 25"
@@ -197,6 +203,7 @@ class WAWorker {
         // Re-sync the running counters to today's break threshold
         this.nextBreakAt = this.todaysProfile.broadcast.breakEvery;
         this.autoReplyNextBreakAt = this.todaysProfile.autoReply.breakEvery;
+        this.birthdayNextBreakAt  = this.todaysProfile.birthday.breakEvery;
 
         const sec = (ms) => Math.round(ms / 1000);
         console.log(`[AntiBan] Daily profile for ${today}:`
@@ -631,6 +638,15 @@ class WAWorker {
             if (arCount > 0) {
                 console.log(`[WA Worker] Recovered ${arCount} stale auto-reply log(s)`);
             }
+
+            // Stale birthday rows (worker crashed between claim and send) → back to pending
+            const { rowCount: bdCount } = await db.query(
+                `UPDATE birthday_greetings SET status = 'pending', updated_at = NOW()
+                 WHERE status = 'sending' AND sent_at IS NULL`
+            );
+            if (bdCount > 0) {
+                console.log(`[WA Worker] Recovered ${bdCount} stale birthday greeting(s)`);
+            }
         } catch (err) {
             console.error('[WA Worker] Recovery error:', err.message);
         }
@@ -661,9 +677,28 @@ class WAWorker {
             const autoReplyNextSendIn = Math.max(0, this.nextAutoReplyAllowedAt - now);
             const autoReplyBreakRemaining = Math.max(0, this.autoReplyBreakUntil - now);
 
+            const birthdayInBreak = now < this.birthdayBreakUntil;
+            const birthdayNextSendIn = Math.max(0, this.nextBirthdayAllowedAt - now);
+            const birthdayBreakRemaining = Math.max(0, this.birthdayBreakUntil - now);
+
+            // Count pending birthday greetings (auto + manual)
+            const { rows: bdCounts } = await db.query(
+                `SELECT
+                    COUNT(*) FILTER (WHERE status = 'pending' AND dispatch_mode = 'auto')  AS bd_auto_pending,
+                    COUNT(*) FILTER (WHERE status = 'sending' AND dispatch_mode = 'auto')  AS bd_auto_sending,
+                    COUNT(*) FILTER (WHERE status = 'pending' AND dispatch_mode = 'manual') AS bd_manual_pending
+                 FROM birthday_greetings
+                 WHERE greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))`
+            );
+
             return {
                 running: this.isRunning,
                 ...counts,
+                birthday: {
+                    auto_pending:   parseInt(bdCounts[0]?.bd_auto_pending  || 0),
+                    auto_sending:   parseInt(bdCounts[0]?.bd_auto_sending  || 0),
+                    manual_pending: parseInt(bdCounts[0]?.bd_manual_pending || 0)
+                },
                 antiBan: {
                     workingHours: this._isWorkingHours(),
                     inBreak,
@@ -677,6 +712,13 @@ class WAWorker {
                         msgsSinceLastBreak: this.autoReplyMsgsSinceBreak,
                         nextBreakAt: this.autoReplyNextBreakAt,
                         nextSendInSec: Math.round(autoReplyNextSendIn / 1000)
+                    },
+                    birthday: {
+                        inBreak: birthdayInBreak,
+                        breakRemainingSec: Math.round(birthdayBreakRemaining / 1000),
+                        msgsSinceLastBreak: this.birthdayMsgsSinceBreak,
+                        nextBreakAt: this.birthdayNextBreakAt,
+                        nextSendInSec: Math.round(birthdayNextSendIn / 1000)
                     }
                 }
             };
@@ -709,65 +751,138 @@ class WAWorker {
 
     // ===========================================
     // WORKER: BIRTHDAY QUEUE (AUTO ONLY)
+    // Non-blocking — uses nextBirthdayAllowedAt + birthdayBreakUntil just like
+    // auto-reply, so birthday pacing never stalls broadcast or auto-reply ticks.
+    // Delay/break values come from today's birthday profile (sampled once per day).
+    // Spintax + {nama}/{umur} pipeline is applied here before sending.
     // ===========================================
     async _processBirthdayQueue() {
-        // GATE 1: Berhenti jika di luar jam operasional
-        if (!this._isWorkingHours()) {
-            return; // Diam saja, biarkan antrean menumpuk untuk dilanjutkan besok pagi
-        }
+        const now = Date.now();
 
+        // Gate 1: working hours (08:00–22:00 WITA)
+        if (!this._isWorkingHours()) return;
+
+        // Gate 2: in a break
+        if (now < this.birthdayBreakUntil) return;
+
+        // Gate 3: inter-message delay not yet elapsed
+        if (now < this.nextBirthdayAllowedAt) return;
+
+        // Gate 4: bridge readiness (cheap in-memory check from wa-bridge)
         try {
-            // GATE 2: Cari 1 customer yang antreannya OTOMATIS dan belum terkirim
-            const { rows } = await db.query(`
-                SELECT bg.id as greeting_id, c.id as customer_id, c.nama_lengkap, c.whatsapp 
+            const status = await whatsappService.getStatus();
+            if (!status || status.status !== 'connected') return;
+        } catch (_) { return; }
+
+        // Claim one pending AUTO birthday atomically (SKIP LOCKED so concurrent
+        // calls — even if they happened — would never double-claim the same row).
+        const client = await db.connect();
+        let row;
+        try {
+            await client.query('BEGIN');
+            const { rows } = await client.query(`
+                SELECT bg.id      AS greeting_id,
+                       c.id       AS customer_id,
+                       c.nama_lengkap,
+                       c.whatsapp,
+                       c.tanggal_lahir
                 FROM birthday_greetings bg
                 JOIN customers c ON bg.customer_id = c.id
-                WHERE bg.status = 'pending' 
+                WHERE bg.status        = 'pending'
                   AND bg.dispatch_mode = 'auto'
                   AND bg.greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
                 ORDER BY bg.id ASC
                 LIMIT 1
+                FOR UPDATE OF bg SKIP LOCKED
             `);
-
-            // Kalau tidak ada antrian otomatis, keluar dari fungsi
-            if (rows.length === 0) return; 
-
-            const data = rows[0];
-
-            // GATE 3: Anti-Ban (Delay & Break)
-            this.consecutiveBirthdays = (this.consecutiveBirthdays || 0) + 1;
-            
-            // Cek apakah sudah waktunya break (misal: setelah 25 pesan berturut-turut)
-            if (this.consecutiveBirthdays >= this._randomBreakThreshold()) {
-                const breakMs = this._randInt(15 * 60000, 30 * 60000); // Break 15-30 menit
-                console.log(`[WA-WORKER] ☕ Break ${Math.round(breakMs/60000)} menit untuk Birthday Auto-Queue.`);
-                await new Promise(resolve => setTimeout(resolve, breakMs));
-                this.consecutiveBirthdays = 0; // Reset counter setelah break
-            } else {
-                // Delay normal antar pesan (misal: 15-35 detik)
-                const delayMs = this._randInt(15000, 35000);
-                await new Promise(resolve => setTimeout(resolve, delayMs));
-            }
-
-            // PERSIAPAN PESAN
-            const msgResult = await db.query(`SELECT value FROM app_settings WHERE key = 'birthday_message'`);
-            const template = msgResult.rows.length > 0 ? msgResult.rows[0].value : 'Halo Kak {nama}! 🎂 Selamat Ulang Tahun!';
-            const finalMessage = template.replace(/{nama}/g, data.nama_lengkap);
-
-            // EKSEKUSI KIRIM WA
-            console.log(`[WA-WORKER] 🎂 Mengirim pesan ultah OTOMATIS ke ${data.nama_lengkap}`);
-            // (Sesuaikan nama method ini dengan fungsi kirim aslimu, misal sendMessage / _bridgeSend)
-            const sendRes = await whatsappService.sendMessage(data.whatsapp, finalMessage, 'birthday');
-
-            // UPDATE DATABASE BERDASARKAN HASIL (Hilang dari tab "Gagal Terkirim")
-            if (sendRes.success) {
-                await db.query(`UPDATE birthday_greetings SET status = 'sent', error = NULL WHERE id = $1`, [data.greeting_id]);
-            } else {
-                await db.query(`UPDATE birthday_greetings SET status = 'failed', error = $1 WHERE id = $2`, [sendRes.error || 'Bridge Timeout/Disconnect', data.greeting_id]);
-            }
-
+            if (rows.length === 0) { await client.query('COMMIT'); return; }
+            row = rows[0];
+            await client.query(
+                `UPDATE birthday_greetings SET status = 'sending', updated_at = NOW() WHERE id = $1`,
+                [row.greeting_id]
+            );
+            await client.query('COMMIT');
         } catch (err) {
-            console.error('[WA-WORKER] Error processing birthday queue:', err.message);
+            await client.query('ROLLBACK').catch(() => {});
+            console.error('[WA Worker] Birthday claim error:', err.message);
+            return;
+        } finally {
+            client.release();
+        }
+
+        // Build message — spintax first, then {nama}/{umur} replace (same pipeline
+        // as birthdayController.sendBirthdayMessage so manual/auto are identical).
+        let finalMessage;
+        try {
+            const msgResult = await db.query(`SELECT value FROM app_settings WHERE key = 'birthday_message'`);
+            const DEFAULT_BD = `Halo Kak {nama}! 🎂🎉\n\nSelamat Ulang Tahun! Semoga panjang umur dan sehat selalu. Terima kasih sudah menjadi pelanggan setia kami.\n\nSalam hangat 🙏`;
+            const template = msgResult.rows.length > 0 ? msgResult.rows[0].value : DEFAULT_BD;
+            finalMessage = spinText(template);
+            finalMessage = finalMessage.replace(/\{nama\}/gi, row.nama_lengkap);
+            // {umur} — calculate age
+            if (row.tanggal_lahir) {
+                const birth = new Date(row.tanggal_lahir);
+                let age = new Date().getFullYear() - birth.getFullYear();
+                const m = new Date().getMonth() - birth.getMonth();
+                if (m < 0 || (m === 0 && new Date().getDate() < birth.getDate())) age--;
+                finalMessage = finalMessage.replace(/\{umur\}/gi, age >= 0 ? String(age) : '');
+            } else {
+                finalMessage = finalMessage.replace(/\{umur\}/gi, '');
+            }
+        } catch (err) {
+            finalMessage = `Halo Kak ${row.nama_lengkap}! 🎂 Selamat Ulang Tahun! Semoga panjang umur dan sehat selalu. 🙏`;
+        }
+
+        // Send via wa-bridge (same path as sendBirthdayGreeting)
+        try {
+            const sendRes = await whatsappService.sendBirthdayGreeting(
+                { id: row.customer_id, nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
+                finalMessage
+            );
+
+            if (sendRes.success) {
+                await db.query(
+                    `UPDATE birthday_greetings SET status = 'sent', sent_at = NOW(), error = NULL, updated_at = NOW() WHERE id = $1`,
+                    [row.greeting_id]
+                );
+                await db.query(
+                    `INSERT INTO messages (customer_id, direction, message, sent_at) VALUES ($1, 'out', $2, NOW())`,
+                    [row.customer_id, finalMessage]
+                ).catch(() => {});
+                console.log(`[WA Worker] 🎂 Birthday sent to ${row.nama_lengkap} (${this.birthdayMsgsSinceBreak + 1}/${this.birthdayNextBreakAt} until break)`);
+            } else {
+                await db.query(
+                    `UPDATE birthday_greetings SET status = 'failed', error = $1, updated_at = NOW() WHERE id = $2`,
+                    [sendRes.error || 'Bridge send failed', row.greeting_id]
+                );
+                console.warn(`[WA Worker] 🎂❌ Birthday failed for ${row.nama_lengkap}: ${sendRes.error}`);
+            }
+
+            this.birthdayMsgsSinceBreak += 1;
+        } catch (err) {
+            await db.query(
+                `UPDATE birthday_greetings SET status = 'failed', error = $1, updated_at = NOW() WHERE id = $2`,
+                [err.message || 'exception', row.greeting_id]
+            ).catch(() => {});
+            console.error('[WA Worker] Birthday send exception:', err.message);
+            return;  // skip scheduling below on hard error
+        }
+
+        // Schedule next birthday slot using today's profile (base ± jitter)
+        const profile = this._ensureDailyProfile().birthday;
+        if (this.birthdayMsgsSinceBreak >= this.birthdayNextBreakAt) {
+            const breakMs = this._randInt(profile.breakDuration.min, profile.breakDuration.max);
+            this.birthdayBreakUntil = Date.now() + breakMs;
+            this.birthdayMsgsSinceBreak = 0;
+            this.birthdayNextBreakAt = this._randInt(
+                CONFIG.birthday.breakEveryRange.min,
+                CONFIG.birthday.breakEveryRange.max
+            );
+            console.log(`[WA Worker] 🎂☕ Birthday BREAK for ${Math.round(breakMs / 60_000)} min`);
+        } else {
+            const jitter = this._randInt(-CONFIG.birthday.jitterMs, CONFIG.birthday.jitterMs);
+            const delay = Math.max(60_000, profile.base + jitter);
+            this.nextBirthdayAllowedAt = Date.now() + delay;
         }
     }
 
