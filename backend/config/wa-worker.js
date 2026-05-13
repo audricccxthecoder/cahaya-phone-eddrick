@@ -240,6 +240,7 @@ class WAWorker {
         try {
             await this._retryFailed();
             await this._processAutoReplyQueue();
+            await this._processBirthdayQueue();
             await this._processBroadcast();
         } catch (err) {
             console.error('[WA Worker] Cycle error:', err.message);
@@ -703,6 +704,70 @@ class WAWorker {
             return v > 0 ? v : CONFIG.defaultDailyLimit;
         } catch (_) {
             return CONFIG.defaultDailyLimit;
+        }
+    }
+
+    // ===========================================
+    // WORKER: BIRTHDAY QUEUE (AUTO ONLY)
+    // ===========================================
+    async _processBirthdayQueue() {
+        // GATE 1: Berhenti jika di luar jam operasional
+        if (!this._isWorkingHours()) {
+            return; // Diam saja, biarkan antrean menumpuk untuk dilanjutkan besok pagi
+        }
+
+        try {
+            // GATE 2: Cari 1 customer yang antreannya OTOMATIS dan belum terkirim
+            const { rows } = await db.query(`
+                SELECT bg.id as greeting_id, c.id as customer_id, c.nama_lengkap, c.whatsapp 
+                FROM birthday_greetings bg
+                JOIN customers c ON bg.customer_id = c.id
+                WHERE bg.status = 'pending' 
+                  AND bg.dispatch_mode = 'auto'
+                  AND bg.greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
+                ORDER BY bg.id ASC
+                LIMIT 1
+            `);
+
+            // Kalau tidak ada antrian otomatis, keluar dari fungsi
+            if (rows.length === 0) return; 
+
+            const data = rows[0];
+
+            // GATE 3: Anti-Ban (Delay & Break)
+            this.consecutiveBirthdays = (this.consecutiveBirthdays || 0) + 1;
+            
+            // Cek apakah sudah waktunya break (misal: setelah 25 pesan berturut-turut)
+            if (this.consecutiveBirthdays >= this._randomBreakThreshold()) {
+                const breakMs = this._randInt(15 * 60000, 30 * 60000); // Break 15-30 menit
+                console.log(`[WA-WORKER] ☕ Break ${Math.round(breakMs/60000)} menit untuk Birthday Auto-Queue.`);
+                await new Promise(resolve => setTimeout(resolve, breakMs));
+                this.consecutiveBirthdays = 0; // Reset counter setelah break
+            } else {
+                // Delay normal antar pesan (misal: 15-35 detik)
+                const delayMs = this._randInt(15000, 35000);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+
+            // PERSIAPAN PESAN
+            const msgResult = await db.query(`SELECT value FROM app_settings WHERE key = 'birthday_message'`);
+            const template = msgResult.rows.length > 0 ? msgResult.rows[0].value : 'Halo Kak {nama}! 🎂 Selamat Ulang Tahun!';
+            const finalMessage = template.replace(/{nama}/g, data.nama_lengkap);
+
+            // EKSEKUSI KIRIM WA
+            console.log(`[WA-WORKER] 🎂 Mengirim pesan ultah OTOMATIS ke ${data.nama_lengkap}`);
+            // (Sesuaikan nama method ini dengan fungsi kirim aslimu, misal sendMessage / _bridgeSend)
+            const sendRes = await whatsappService.sendMessage(data.whatsapp, finalMessage, 'birthday');
+
+            // UPDATE DATABASE BERDASARKAN HASIL (Hilang dari tab "Gagal Terkirim")
+            if (sendRes.success) {
+                await db.query(`UPDATE birthday_greetings SET status = 'sent', error = NULL WHERE id = $1`, [data.greeting_id]);
+            } else {
+                await db.query(`UPDATE birthday_greetings SET status = 'failed', error = $1 WHERE id = $2`, [sendRes.error || 'Bridge Timeout/Disconnect', data.greeting_id]);
+            }
+
+        } catch (err) {
+            console.error('[WA-WORKER] Error processing birthday queue:', err.message);
         }
     }
 

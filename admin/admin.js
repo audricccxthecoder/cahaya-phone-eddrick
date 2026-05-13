@@ -2739,6 +2739,43 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     };
 
+    window.sendBirthdayManual = async function(customerId, buttonElement) {
+    // 1. Kunci tombol dan ubah visualnya jadi loading muter-muter
+    const originalText = buttonElement.innerHTML;
+    buttonElement.disabled = true;
+    buttonElement.innerHTML = '🔄 Mengirim...';
+    buttonElement.style.opacity = '0.7';
+    buttonElement.style.cursor = 'wait';
+
+    try {
+        // 2. Tembak API backend
+        const res = await apiCall('/admin/birthday/send', {
+            method: 'POST',
+            body: JSON.stringify({ customer_id: customerId })
+        });
+
+        if (res && res.success) {
+            // 3. Jika sukses, tombol hilang/berubah jadi badge terkirim
+            buttonElement.outerHTML = `<span class="badge badge-success">✅ Terkirim</span>`;
+            // Opsional: Panggil loadBirthdayList() lagi untuk me-refresh data
+        } else {
+            // Jika gagal (misal di luar jam operasional atau masih ada antrian auto)
+            alert(res?.message || 'Gagal mengirim pesan.');
+            // Kembalikan tombol seperti semula
+            buttonElement.disabled = false;
+            buttonElement.innerHTML = originalText;
+            buttonElement.style.opacity = '1';
+            buttonElement.style.cursor = 'pointer';
+        }
+    } catch (error) {
+        alert('Terjadi kesalahan jaringan.');
+        buttonElement.disabled = false;
+        buttonElement.innerHTML = originalText;
+        buttonElement.style.opacity = '1';
+        buttonElement.style.cursor = 'pointer';
+    }
+};
+
     async function loadBirthdayHistory() {
         const container = document.getElementById('birthdayHistory');
         container.innerHTML = '<div class="loading">Loading...</div>';

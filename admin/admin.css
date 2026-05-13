@@ -783,6 +783,21 @@ button, .btn {
     font-family: 'Inter', sans-serif;
 }
 
+/* Gaya untuk tombol antrean otomatis yang mati */
+.btn.btn-auto-disabled {
+    background-color: #e0e0e0 !important; /* Abu-abu pucat */
+    color: #888888 !important;            /* Teks abu-abu gelap */
+    border-color: #cccccc !important;
+    cursor: not-allowed !important;
+    opacity: 0.7;
+}
+
+/* Memastikan saat loading manual, cursor berubah */
+.btn.btn-manual:disabled {
+    cursor: wait !important;
+    opacity: 0.7;
+}
+
 .btn-primary {
     background: linear-gradient(145deg, var(--red), var(--red-deep));
     color: white;
