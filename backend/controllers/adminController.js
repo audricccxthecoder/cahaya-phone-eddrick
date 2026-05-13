@@ -1777,9 +1777,9 @@ exports.getFailedWA = async (req, res) => {
             `SELECT c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at,
                     w.id AS log_id, w.status AS log_status, w.auto_dispatch AS log_auto_dispatch
              FROM customers c
-             LEFT JOIN LATERAL (
+             JOIN LATERAL (
                  SELECT id, status, auto_dispatch FROM whatsapp_logs
-                 WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
+                 WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING','FAILED')
                  ORDER BY id DESC LIMIT 1
              ) w ON TRUE
              WHERE c.wa_sent IS NOT TRUE AND c.tipe = 'Belanja'

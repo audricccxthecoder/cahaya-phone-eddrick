@@ -127,6 +127,26 @@ class GoogleContactsService {
         }
     }
 
+    async findContactByPhoneNumber(phone) {
+        const auth = await this.getAuthenticatedClient();
+        if (!auth) return null;
+
+        const people = google.people({ version: 'v1', auth });
+        return this.findContactByPhone(people, phone);
+    }
+
+    _isPlaceholderName(name) {
+        if (!name || typeof name !== 'string') return false;
+        const trimmed = name.trim();
+        if (/^Customer - \d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return true;
+        if (/^.+ - \d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return true;
+        return false;
+    }
+
+    isPlaceholderName(name) {
+        return this._isPlaceholderName(name);
+    }
+
     async saveContact(customer) {
         try {
             console.log(`📇 Attempting to save contact: ${customer.nama_lengkap}`);
@@ -198,16 +218,33 @@ class GoogleContactsService {
 
             let result;
             if (existing && existing.resourceName) {
-                // Update existing contact
                 const etag = existing.etag;
-                const updateBody = { ...contactData, etag };
+                const existingName = Array.isArray(existing.names) && existing.names[0]
+                    ? existing.names[0].displayName || existing.names[0].givenName || ''
+                    : '';
+                const canUpdateName = this._isPlaceholderName(existingName);
+
+                if (canUpdateName) {
+                    // Update placeholder contact names and details.
+                    const updateBody = { ...contactData, etag };
+                    result = await people.people.updateContact({
+                        resourceName: existing.resourceName,
+                        updatePersonFields: 'names,phoneNumbers,addresses,biographies',
+                        requestBody: updateBody
+                    });
+                    console.log(`✅ Google Contact updated: ${contactName}`);
+                    return { success: true, resourceName: result.data.resourceName, action: 'updated' };
+                }
+
+                // Preserve existing real contact name; only refresh biography.
+                const updateBody = { etag, biographies: contactData.biographies };
                 result = await people.people.updateContact({
                     resourceName: existing.resourceName,
-                    updatePersonFields: 'names,phoneNumbers,addresses,biographies',
+                    updatePersonFields: 'biographies',
                     requestBody: updateBody
                 });
-                console.log(`✅ Google Contact updated: ${contactName}`);
-                return { success: true, resourceName: result.data.resourceName, action: 'updated' };
+                console.log(`ℹ️ Google Contact preserved name (${existingName}); biography updated`);
+                return { success: true, resourceName: result.data.resourceName, action: 'preserved' };
             } else {
                 // Create new contact
                 result = await people.people.createContact({

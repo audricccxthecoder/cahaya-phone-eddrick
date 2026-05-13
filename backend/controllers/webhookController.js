@@ -40,6 +40,22 @@ exports.handleIncomingMessage = async (data) => {
 
         console.log(`[WEBHOOK] Processing: ${senderName} (${cleanPhone}): ${message.substring(0, 50)}...`);
 
+        // If this phone already exists in Google Contacts with a real name,
+        // ignore it completely. This prevents staff/shop numbers from becoming
+        // system-managed chat-only customers.
+        try {
+            const googleContact = await googleService.findContactByPhoneNumber(cleanPhone);
+            const googleName = Array.isArray(googleContact?.names) && googleContact.names[0]
+                ? googleContact.names[0].displayName || googleContact.names[0].givenName || ''
+                : '';
+            if (googleName && !googleService.isPlaceholderName(googleName)) {
+                console.log(`[WEBHOOK] Ignored incoming chat from ${cleanPhone}; existing Google contact: ${googleName}`);
+                return { success: true, ignored: true, reason: 'existing_real_google_contact' };
+            }
+        } catch (err) {
+            console.warn('[WEBHOOK] Google contact lookup failed:', err.message);
+        }
+
         // Opt-out: jika customer balas "STOP" / "BERHENTI", set opted_in = false
         const optOutKeywords = ['stop', 'berhenti', 'unsubscribe', 'keluar'];
         const lowerMsg = message.trim().toLowerCase();

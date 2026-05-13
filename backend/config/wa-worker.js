@@ -16,6 +16,7 @@
 
 const db = require('./database');
 const whatsappService = require('./whatsapp');
+const { sanitizePhone } = require('../utils/phoneUtils');
 require('dotenv').config();
 
 // Spintax parser — resolves {opt1|opt2|opt3} to one random option.
@@ -331,15 +332,18 @@ class WAWorker {
             await whatsappService._incrementDailyCounter('sent');
 
             // Mark the matching customer record so dashboard reflects "auto-reply delivered"
+            const normalizedPhone = sanitizePhone(row.phone);
+            const legacyPhone = normalizedPhone.startsWith('62') ? '+' + normalizedPhone : normalizedPhone;
             await db.query(
                 `UPDATE customers
                  SET wa_sent = TRUE,
                      status = CASE
                          WHEN status = 'New' AND tipe = 'Chat Only' THEN 'Contacted'
                          ELSE status
-                     END
-                 WHERE whatsapp = $1`,
-                [row.phone]
+                     END,
+                     updated_at = NOW()
+                 WHERE whatsapp = $1 OR whatsapp = $2`,
+                [normalizedPhone, legacyPhone]
             ).catch(() => {});
 
             this.autoReplyMsgsSinceBreak += 1;
