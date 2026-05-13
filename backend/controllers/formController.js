@@ -88,7 +88,11 @@ exports.submitForm = async (req, res) => {
                 { pattern: /\b(tw|twitter|x\.com)\b/i, name: 'Twitter/X' },
                 { pattern: /\b(shopee|tokped|tokopedia|lazada|marketplace|olshop)\b/i, name: 'Marketplace' },
                 { pattern: /\b(teman|temen|tmn|sodara|saudara|keluarga|klrga|kenal|tetangga|ortu|nyokap|bokap|kakak|adik|om|tante)\b/i, name: 'Teman/Keluarga' },
-                { pattern: /\b(lewat|jalan|lalu|numpang|mampir|depan|toko|banner|spanduk|papan)\b/i, name: 'Walk-in' }
+                { pattern: /\b(lewat|jalan|lalu|numpang|mampir|depan|toko|banner|spanduk|papan)\b/i, name: 'Walk-in' },
+                // Repeat buyer / sudah kenal toko — must be checked BEFORE generic fallback
+                { pattern: /\b(pernah|langganan|pelanggan|repeat|kembali|lagi|balik|sudah tau|udah tau|kenal|tahu|tau).*(toko|cahaya|phone|hp|kami|sini)\b/i, name: 'Repeat Buyer' },
+                { pattern: /\b(konsumen|customer|pembeli).*(pernah|lama|lagi|kembali|balik|tau|tahu|kenal|sudah|udah)\b/i, name: 'Repeat Buyer' },
+                { pattern: /\b(pernah beli|udah beli|sudah beli|beli lagi|belanja lagi)\b/i, name: 'Repeat Buyer' }
             ];
 
             const found = mappings.find(m => m.pattern.test(tdLower));
@@ -97,7 +101,10 @@ exports.submitForm = async (req, res) => {
             } else if (td.trim() === '') {
                 source = 'Website';
             } else {
-                source = td.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                // Fallback: title-case but HARD CAP at 20 chars to match DB column VARCHAR(20).
+                // If it exceeds 20, use 'Lainnya' so we don't silently truncate mid-word.
+                const titleCased = td.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                source = titleCased.length <= 20 ? titleCased : 'Lainnya';
             }
         }
 
