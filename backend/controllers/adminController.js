@@ -256,7 +256,9 @@ exports.getStats = async (req, res) => {
                 -- Per status detail
                 COUNT(*) FILTER (WHERE status = 'New') as status_new,
                 COUNT(*) FILTER (WHERE status = 'Contacted') as status_contacted,
-                COUNT(*) FILTER (WHERE status = 'Follow Up') as status_follow_up
+                COUNT(*) FILTER (WHERE status = 'Follow Up') as status_follow_up,
+                COUNT(*) FILTER (WHERE status = 'Completed') as status_completed,
+                COUNT(*) FILTER (WHERE status = 'Inactive') as status_inactive
             FROM customers
         `);
 

@@ -87,6 +87,10 @@ SELECT
     SUM(CASE WHEN source = 'TikTok' THEN 1 ELSE 0 END) as from_tiktok,
     SUM(CASE WHEN source LIKE '%Teman%' OR source LIKE '%Keluarga%' THEN 1 ELSE 0 END) as from_friends,
     SUM(CASE WHEN status = 'New' THEN 1 ELSE 0 END) as new_customers,
+    SUM(CASE WHEN status = 'Contacted' THEN 1 ELSE 0 END) as contacted_customers,
+    SUM(CASE WHEN status = 'Follow Up' THEN 1 ELSE 0 END) as followup_customers,
+    SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_customers,
+    SUM(CASE WHEN status = 'Inactive' THEN 1 ELSE 0 END) as inactive_customers,
     SUM(CASE WHEN status = 'Old' THEN 1 ELSE 0 END) as old_customers,
     SUM(CASE WHEN DATE(created_at) = CURDATE() THEN 1 ELSE 0 END) as today_customers,
     SUM(CASE WHEN source NOT IN ('Website','Instagram','Facebook','TikTok','Teman/Keluarga') THEN 1 ELSE 0 END) as from_others

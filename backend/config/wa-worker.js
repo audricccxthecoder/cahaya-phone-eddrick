@@ -332,7 +332,13 @@ class WAWorker {
 
             // Mark the matching customer record so dashboard reflects "auto-reply delivered"
             await db.query(
-                `UPDATE customers SET wa_sent = TRUE, status = 'Completed' WHERE whatsapp = $1 AND status = 'New'`,
+                `UPDATE customers
+                 SET wa_sent = TRUE,
+                     status = CASE
+                         WHEN status = 'New' AND tipe = 'Chat Only' THEN 'Contacted'
+                         ELSE status
+                     END
+                 WHERE whatsapp = $1`,
                 [row.phone]
             ).catch(() => {});
 

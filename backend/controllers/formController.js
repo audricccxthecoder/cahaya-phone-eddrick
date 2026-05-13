@@ -205,11 +205,10 @@ exports.submitForm = async (req, res) => {
                     console.warn('⚠️ enqueueAutoReply returned non-success:', waResult?.error);
                 }
                 // wa_sent stays false until worker (or manual click) actually sends.
-                await db.query('UPDATE customers SET wa_sent = FALSE, status = $1 WHERE id = $2',
-                    ['New', customerId]);
+                // Leave status as-is for Belanja customers, since purchase data is already completed.
             } catch (waError) {
                 console.warn('⚠️ WhatsApp auto-reply enqueue failed:', waError.message || waError);
-                await db.query('UPDATE customers SET wa_sent = FALSE, status = $1 WHERE id = $2', ['New', customerId]).catch(() => {});
+                // Do not overwrite customer status on WA enqueue failure.
             }
         })();
 
