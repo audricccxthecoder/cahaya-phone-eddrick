@@ -338,7 +338,7 @@ class WAWorker {
                 `UPDATE customers
                  SET wa_sent = TRUE,
                      status = CASE
-                         WHEN status = 'New' AND tipe = 'Chat Only' THEN 'Contacted'
+                         WHEN status IN ('New', 'Completed', 'Follow Up') THEN 'Contacted'
                          ELSE status
                      END,
                      updated_at = NOW()

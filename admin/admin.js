@@ -1227,7 +1227,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const repeatBadge = pCount > 1 ? ` <span style="background:#B91C1C;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;">${pCount}x</span>` : '';
 
             // WA sent indicator
-            let waIcon = '<span style="color:#F59E0B;" title="Status WA belum diketahui (data lama / enqueue gagal)">&#10007;</span>';
+            let waIcon = '<span style="color:#9CA3AF;" title="Status WA belum diketahui">__</span>';
             if (customer.wa_sent === true) waIcon = '<span style="color:#25D366;" title="WA terkirim">&#10003;</span>';
             else if (customer.wa_sent === false) waIcon = '<span style="color:#DC2626;" title="WA gagal / belum terkirim">&#10007;</span>';
 
@@ -1690,6 +1690,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
             if (feedback) feedback.textContent = 'Perubahan tersimpan.';
             if (typeof loadCustomers === 'function') loadCustomers();
+            if (typeof loadFailedWA === 'function') loadFailedWA();  // Refresh queue list
             showCustomerDetail({ ...customerRes.data, purchases: purchasesRes.data.purchases });
         } catch (error) {
             console.error('saveCustomerDetail error:', error);
@@ -2464,7 +2465,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
         let html = header;
         html += '<div style="max-height:300px;overflow-y:auto;">';
-        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Antrian</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
         res.data.forEach(c => {
             // Per-row dispatch context:
             //   auto_dispatch=TRUE   → system akan handle, button disabled
@@ -2472,6 +2473,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             //   auto_dispatch=null   → no pending row at all (rare/legacy), treat sebagai manual-enabled
             const isAuto = c.log_auto_dispatch === true;
             const isSending = c.log_status === 'SENDING' || _waManualSendingId === c.id;
+            const queueCount = c.queue_count || 0;
 
             let statusBadge;
             if (isSending) {
@@ -2493,7 +2495,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const btnStyle = disableVisual
                 ? 'padding:4px 12px;font-size:11px;opacity:0.45;cursor:not-allowed;'
                 : 'padding:4px 12px;font-size:11px;';
-            const btnTitle = isAuto ? 'Sistem akan kirim otomatis'
+            const btnTitle = isAuto ? `Sistem akan kirim otomatis (${queueCount} antrian)`
                 : isSending ? 'Sedang dikirim'
                 : !isWorkingHours ? `Di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}) — klik untuk konfirmasi`
                 : autoPending ? 'Antrian otomatis aktif — klik untuk konfirmasi'
@@ -2506,6 +2508,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 <td>${esc(c.nama_lengkap)}</td>
                 <td>${esc(c.whatsapp)}</td>
                 <td><span class="badge">${esc(c.tipe || 'Belanja')}</span></td>
+                <td style="text-align:center;font-weight:600;color:#B91C1C;">${queueCount}x</td>
                 <td>${statusBadge}</td>
                 <td><button class="btn-small" style="${btnStyle}" ${btnAttrs}>${btnLabel}</button></td>
             </tr>`;

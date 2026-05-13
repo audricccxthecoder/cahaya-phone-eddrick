@@ -1986,21 +1986,30 @@ function _isWorkingHoursWITA() {
  */
 exports.getFailedWA = async (req, res) => {
     try {
+        // Get all pending queue entries grouped by customer with counts
         const { rows } = await db.query(
             `SELECT c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at,
-                    w.id AS log_id, w.status AS log_status, w.auto_dispatch AS log_auto_dispatch
+                    w.latest_id AS log_id, 
+                    w.latest_status AS log_status, 
+                    w.latest_auto_dispatch AS log_auto_dispatch,
+                    w.queue_count,
+                    w.has_any_auto_true
              FROM customers c
              JOIN LATERAL (
-                 SELECT id, status, auto_dispatch FROM whatsapp_logs
+                 SELECT 
+                     (array_agg(id ORDER BY id DESC))[1]::int AS latest_id,
+                     (array_agg(status ORDER BY id DESC))[1] AS latest_status,
+                     (array_agg(auto_dispatch ORDER BY id DESC))[1] AS latest_auto_dispatch,
+                     COUNT(*)::int AS queue_count,
+                     bool_or(auto_dispatch) AS has_any_auto_true
+                 FROM whatsapp_logs
                  WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING','FAILED')
-                 ORDER BY id DESC LIMIT 1
              ) w ON TRUE
-             WHERE c.wa_sent IS NOT TRUE AND c.tipe = 'Belanja'
+             WHERE c.tipe = 'Belanja'
              ORDER BY c.created_at DESC`
         );
 
-        // Check if any auto_dispatch=TRUE rows are still pending — used by frontend
-        // to know whether manual clicks will be rejected with 409.
+        // Check if any auto_dispatch=TRUE rows are still pending
         const { rows: autoPending } = await db.query(
             `SELECT COUNT(*)::int AS cnt FROM whatsapp_logs
              WHERE type = 'auto_reply' AND status IN ('QUEUED','SENDING') AND auto_dispatch = TRUE`
@@ -2015,6 +2024,7 @@ exports.getFailedWA = async (req, res) => {
             working_hours: { start: WA_WORK_START, end: WA_WORK_END, tz: 'WITA' }
         });
     } catch (error) {
+        console.error('❌ getFailedWA error:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -2079,6 +2089,16 @@ exports.retryWA = async (req, res) => {
                 { autoDispatch: true }
             );
             if (!enqRes || !enqRes.success) {
+                if (enqRes?.registered === false || /Invalid phone number|Nomor tidak terdaftar/i.test(enqRes?.error || '')) {
+                    await db.query(
+                        'UPDATE customers SET wa_sent = NULL WHERE id = $1 AND wa_sent IS NOT TRUE',
+                        [customer.id]
+                    ).catch(() => {});
+                    return res.status(400).json({
+                        success: false,
+                        message: enqRes.error || 'Nomor tidak terdaftar di WhatsApp'
+                    });
+                }
                 return res.status(500).json({
                     success: false,
                     message: 'Gagal masukkan pesan ke antrian: ' + (enqRes?.error || 'unknown')
