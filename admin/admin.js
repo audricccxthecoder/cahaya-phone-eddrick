@@ -2360,12 +2360,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 statusBadge = '<span style="background:#DBEAFE;color:#1D4ED8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Mengirim...</span>';
             } else if (isAuto) {
                 statusBadge = '<span style="background:#FEF3C7;color:#92400E;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Antrian Otomatis</span>';
+            } else if (!c.log_id) {
+                // Tidak ada row di whatsapp_logs — customer lama / belum pernah masuk queue
+                statusBadge = '<span style="background:#F3F4F6;color:#6B7280;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Belum Dikirim</span>';
             } else if (c.log_auto_dispatch === false) {
                 statusBadge = '<span style="background:#F3F4F6;color:#374151;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Menunggu Manual</span>';
             } else {
+                // Ada row tapi status aneh - genuinely failed
                 statusBadge = '<span style="background:#FEE2E2;color:#991B1B;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Gagal</span>';
             }
-
             // Per spec: auto rows have button TRULY disabled (visual differentiation).
             // Manual rows stay PRESSABLE even when blocked by out-of-hours or auto-pending —
             // clicking produces a clear notif from backend. Only currently-sending rows
