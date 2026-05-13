@@ -285,7 +285,7 @@ class WAWorker {
             const { rows } = await client.query(
                 `SELECT id, phone, message_body
                  FROM whatsapp_logs
-                 WHERE status = 'QUEUED' AND priority = 'auto_reply' AND auto_dispatch = TRUE
+                 WHERE status = 'QUEUED' AND priority = 'auto_reply' AND auto_dispatch = TRUE::boolean
                  ORDER BY id ASC
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED`
