@@ -651,6 +651,20 @@ exports.saveCustomerPurchases = async (req, res) => {
 
             await _syncCustomerSummary(id);
             const remainingPurchases = purchases.filter(p => !p.deleted).length;
+
+            if (remainingPurchases > 0) {
+                // Re-buy / purchase update path: reset WA delivery status
+                // for registered numbers and mark order as completed again.
+                await client.query(
+                    `UPDATE customers
+                     SET wa_sent = FALSE,
+                         status = 'Completed',
+                         updated_at = NOW()
+                     WHERE id = $1 AND wa_sent IS NOT NULL`,
+                    [id]
+                );
+            }
+
             await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases);
 
             await client.query('COMMIT');

@@ -27,7 +27,44 @@ const {
     makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
+const rawLogger = pino({ level: process.env.LOG_LEVEL || 'warn' });
+const BAD_MAC_ALERT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const BAD_MAC_ALERT_THRESHOLD = 10;
+let badMacErrorTimestamps = [];
+let badMacRestartScheduled = false;
+
+function registerBadMacError(message) {
+    const text = String(message || '');
+    if (!/Bad MAC|Failed to decrypt message/i.test(text)) return;
+
+    const now = Date.now();
+    badMacErrorTimestamps = badMacErrorTimestamps.filter(ts => now - ts < BAD_MAC_ALERT_WINDOW_MS);
+    badMacErrorTimestamps.push(now);
+
+    if (badMacErrorTimestamps.length >= BAD_MAC_ALERT_THRESHOLD && !badMacRestartScheduled) {
+        badMacRestartScheduled = true;
+        rawLogger.warn('[BAILEYS] High Bad MAC rate detected — restarting socket to recover session.');
+        if (sock) {
+            try { sock.end(new Error('bad mac recovery')); } catch (err) {
+                rawLogger.warn('[BAILEYS] Failed to end socket during bad mac recovery:', err.message);
+            }
+        }
+    }
+}
+
+const logger = rawLogger;
+logger.warn = function (...args) {
+    registerBadMacError(args[0]);
+    return rawLogger.warn.apply(rawLogger, args);
+};
+logger.error = function (...args) {
+    registerBadMacError(args[0]);
+    return rawLogger.error.apply(rawLogger, args);
+};
+logger.fatal = function (...args) {
+    registerBadMacError(args[0]);
+    return rawLogger.fatal.apply(rawLogger, args);
+};
 
 // ============================================
 // CONFIG
