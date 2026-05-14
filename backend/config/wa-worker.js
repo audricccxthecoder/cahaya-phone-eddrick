@@ -224,16 +224,42 @@ class WAWorker {
         if (this.isRunning) return;
         this.isRunning = true;
         this.startedAt = Date.now();
-        // After restart, wait a cooldown before sending anything
-        this.nextBroadcastAllowedAt = this.startedAt + CONFIG.startupCooldownMs;
 
-        console.log(`[WA Worker] Started. Cooldown ${CONFIG.startupCooldownMs / 1000}s before first broadcast.`);
+        console.log('[WA Worker] Started. Waiting for wa-bridge to be healthy before processing queues...');
 
         await this._recoverStaleBroadcast();
+
+        await this._waitForBridgeHealthy();
+        this.nextBroadcastAllowedAt = Date.now();  // no delay, start immediately
 
         this.intervalId = setInterval(() => {
             if (!this.processing) this._cycle();
         }, CONFIG.tickInterval);
+    }
+
+    async _waitForBridgeHealthy(timeoutMs = 120_000) {
+        const startTime = Date.now();
+        const pollIntervalMs = 2_000;
+
+        console.log('[WA Worker] Waiting for wa-bridge to be healthy...');
+
+        while (Date.now() - startTime < timeoutMs) {
+            try {
+                const status = await whatsappService.getStatus();
+                if (status && status.status === 'connected') {
+                    console.log('[WA Worker] wa-bridge is healthy, starting queue processing');
+                    return true;
+                }
+            } catch (_) {
+                // bridge unreachable, will retry
+            }
+
+            // Wait before next poll
+            await new Promise(r => setTimeout(r, pollIntervalMs));
+        }
+
+        console.warn('[WA Worker] wa-bridge health check timed out after 2 min, starting queue anyway');
+        return false;
     }
 
     stop() {
