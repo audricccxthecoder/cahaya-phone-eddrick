@@ -85,6 +85,20 @@ function isReady() {
     return sock && clientState.status === 'open';
 }
 
+// Check that session files exist and are readable on disk.
+// A missing or empty session directory means Baileys has no credentials to
+// restore — any subsequent send would fail with a libsignal / Bad MAC error.
+function isSessionValid() {
+    try {
+        const entries = fs.readdirSync(SESSION_DIR);
+        // Baileys writes at minimum creds.json; if the directory is empty the
+        // session has been wiped or was never written to disk.
+        return entries.length > 0;
+    } catch (_) {
+        return false;
+    }
+}
+
 // ============================================
 // FORWARD QUEUE — survive backend downtime without losing customer messages
 //
@@ -351,6 +365,33 @@ async function startSocket() {
                     return;
                 }
 
+                // libsignal / Bad MAC — session encryption keys are corrupt or
+                // mismatched with WhatsApp servers. Retrying with the same session
+                // will never succeed; the only recovery is a full session wipe.
+                // Typical error strings: "Bad MAC", "decrypt failed", "bad mac"
+                const isLibsignalError =
+                    /bad mac/i.test(errorMsg) ||
+                    /decrypt failed/i.test(errorMsg) ||
+                    /libsignal/i.test(errorMsg) ||
+                    /invalid session/i.test(errorMsg);
+
+                if (isLibsignalError) {
+                    console.error(
+                        '[SESSION] ⚠️  libsignal / Bad MAC error detected — session keys are corrupt.\n' +
+                        `           Error: "${errorMsg}"\n` +
+                        '           Auto-wiping session and restarting for a fresh QR code.\n' +
+                        '           If this recurs, call POST /api/reset-session to force a manual reset.'
+                    );
+                    clientState.status = 'logged_out';
+                    clientState.lastError = `Session corrupt (libsignal): ${errorMsg}. Re-scan QR to recover.`;
+                    await wipeSession().catch(err =>
+                        console.warn('[SESSION] Wipe failed during libsignal recovery:', err.message));
+                    console.log('[SESSION] Wiped after libsignal error — restarting for new QR');
+                    reconnectAttempts = 0;
+                    scheduleReconnect(0); // immediate re-init to emit new QR
+                    return;
+                }
+
                 // Transient disconnect — reconnect with exponential backoff
                 clientState.status = 'disconnected';
                 clientState.lastError = `${reason}: ${errorMsg}`;
@@ -454,12 +495,30 @@ function scheduleReconnect(overrideMs = null) {
 // ============================================
 
 // Public health check (no auth)
+// Returns HTTP 200 only when the socket is open AND session files are present.
+// Returns HTTP 503 when the session is corrupt, missing, or the socket is not
+// connected — this lets Railway / uptime monitors detect a broken bridge and
+// allows the backend to gate its own health on this endpoint.
 app.get('/', (req, res) => {
-    res.json({
+    const sessionValid = isSessionValid();
+    const connected = clientState.status === 'open';
+    const healthy = connected && sessionValid;
+
+    const body = {
         service: 'Cahaya Phone WA Bridge v2 (Baileys)',
         status: clientState.status,
+        session_valid: sessionValid,
+        healthy,
         uptime_seconds: Math.round(process.uptime())
-    });
+    };
+
+    if (!healthy) {
+        body.hint = connected
+            ? 'Session files missing or corrupt — POST /api/reset-session to recover'
+            : 'Socket not connected — waiting for reconnect or QR scan';
+    }
+
+    return res.status(healthy ? 200 : 503).json(body);
 });
 
 // Status + QR (requires auth)
@@ -488,6 +547,13 @@ app.post('/api/send', authCheck, async (req, res) => {
     }
     if (!isReady()) {
         return res.status(503).json({ success: false, error: `WhatsApp not connected (status: ${clientState.status})` });
+    }
+    if (!isSessionValid()) {
+        console.error('[SEND] Session files missing or corrupt — refusing send. Call POST /api/reset-session to recover.');
+        return res.status(503).json({
+            success: false,
+            error: 'Session corrupt or missing. POST /api/reset-session to wipe and re-authenticate.'
+        });
     }
 
     const jid = toJid(phone);
@@ -576,6 +642,44 @@ app.post('/api/restart', authCheck, async (req, res) => {
         reconnectAttempts = 0;
         setTimeout(() => startSocket().catch(err => console.error('[RESTART] Failed:', err.message)), 500);
     } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Graceful session reset — wipes corrupt session files and triggers a fresh
+// QR code. Use this when the bridge is stuck due to "Bad MAC" / libsignal
+// errors that indicate the session encryption keys are mismatched with the
+// WhatsApp servers. After reset the admin must re-scan the QR code.
+app.post('/api/reset-session', authCheck, async (req, res) => {
+    console.log('[RESET] Session reset requested by admin');
+    try {
+        // Tear down the existing socket cleanly before wiping files
+        if (sock) {
+            try { await sock.logout(); } catch (_) { /* ignore — may already be broken */ }
+            try { sock.end(new Error('session reset')); } catch (_) { /* ignore */ }
+            sock = null;
+        }
+
+        // wipeSession() waits for Baileys async writes to flush, then removes
+        // the session directory with retry logic to handle EBUSY on locked files.
+        await wipeSession();
+
+        clientState.status = 'logged_out';
+        clientState.info = null;
+        clientState.qr = null;
+        clientState.lastError = null;
+        reconnectAttempts = 0;
+
+        console.log('[RESET] Session wiped — starting fresh socket for new QR code');
+        res.json({
+            success: true,
+            message: 'Session reset. Scan the new QR code via /api/status or the admin dashboard.'
+        });
+
+        // Restart immediately so a fresh QR is generated without delay
+        setTimeout(() => startSocket().catch(err => console.error('[RESET] startSocket failed:', err.message)), 500);
+    } catch (err) {
+        console.error('[RESET] Session reset failed:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
