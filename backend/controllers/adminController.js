@@ -1989,23 +1989,29 @@ exports.getFailedWA = async (req, res) => {
         // Get all pending queue entries grouped by customer with counts
         const { rows } = await db.query(
             `SELECT c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at,
-                    w.latest_id AS log_id, 
-                    w.latest_status AS log_status, 
-                    w.latest_auto_dispatch AS log_auto_dispatch,
-                    w.queue_count,
-                    w.has_any_auto_true
+                    latest.latest_id AS log_id,
+                    latest.latest_status AS log_status,
+                    latest.latest_auto_dispatch AS log_auto_dispatch,
+                    stats.queue_count,
+                    stats.has_any_auto_true
              FROM customers c
              JOIN LATERAL (
-                 SELECT 
-                     (array_agg(id ORDER BY id DESC))[1]::int AS latest_id,
-                     (array_agg(status ORDER BY id DESC))[1] AS latest_status,
-                     (array_agg(auto_dispatch ORDER BY id DESC))[1] AS latest_auto_dispatch,
-                     COUNT(*)::int AS queue_count,
-                     bool_or(auto_dispatch) AS has_any_auto_true
+                 SELECT id AS latest_id,
+                        status AS latest_status,
+                        auto_dispatch AS latest_auto_dispatch
+                 FROM whatsapp_logs
+                 WHERE phone = c.whatsapp AND type = 'auto_reply'
+                 ORDER BY id DESC
+                 LIMIT 1
+             ) latest ON TRUE
+             JOIN LATERAL (
+                 SELECT COUNT(*)::int AS queue_count,
+                        bool_or(auto_dispatch) AS has_any_auto_true
                  FROM whatsapp_logs
                  WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING','FAILED')
-             ) w ON TRUE
+             ) stats ON TRUE
              WHERE c.tipe = 'Belanja'
+               AND latest.latest_status IN ('QUEUED','SENDING','FAILED')
              ORDER BY c.created_at DESC`
         );
 

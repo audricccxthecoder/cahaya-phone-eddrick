@@ -1227,9 +1227,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const repeatBadge = pCount > 1 ? ` <span style="background:#B91C1C;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;">${pCount}x</span>` : '';
 
             // WA sent indicator
-            let waIcon = '<span style="color:#9CA3AF;" title="Status WA belum diketahui">__</span>';
-            if (customer.wa_sent === true) waIcon = '<span style="color:#25D366;" title="WA terkirim">&#10003;</span>';
-            else if (customer.wa_sent === false) waIcon = '<span style="color:#DC2626;" title="WA gagal / belum terkirim">&#10007;</span>';
+            let waIcon = '<span style="color:#DC2626;" title="WA gagal / belum terkirim">&#10007;</span>';
+            if (customer.wa_sent === true) {
+                waIcon = '<span style="color:#25D366;" title="WA terkirim">&#10003;</span>';
+            } else if (customer.wa_sent === null) {
+                waIcon = '<span style="color:#6B7280;" title="Nomor tidak terdaftar">__</span>';
+            }
 
             html += `<tr>
                 <td>${start + index + 1}</td>
@@ -1446,7 +1449,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Tanggal Lahir</div>
-                    <div class="detail-value"><input id="detailTanggalLahir" type="date" value="${customer.tanggal_lahir || ''}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
+                    <div class="detail-value"><input id="detailTanggalLahir" type="date" value="${customer.tanggal_lahir ? toWITADate(customer.tanggal_lahir) : ''}" style="width:100%;padding:10px;border:1px solid #E5E7EB;border-radius:10px;font-size:14px;" /></div>
                 </div>
                 <div class="detail-group">
                     <div class="detail-label">Alamat</div>
@@ -1508,7 +1511,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
             </div>
             <div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
-                <button class="btn-primary" onclick="saveCustomerDetail(${customer.id})">Simpan Perubahan</button>
+                <button id="detailSaveButton" class="btn-small" onclick="saveCustomerDetail(${customer.id})" style="min-width:140px;">Simpan Perubahan</button>
                 <span id="detailSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
             </div>
             <!-- Status Legend -->
@@ -1568,7 +1571,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
                     <div style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</div>
-                    <button class="btn-primary" onclick="addPurchaseRow()" type="button">Tambah Pembelian</button>
+                    <button class="btn-small" onclick="addPurchaseRow()" type="button">Tambah Pembelian</button>
                 </div>
                 <div style="overflow-x:auto;border:1px solid #EDE8E3;border-radius:8px;">
                     <table style="width:100%;font-size:13px;border-collapse:collapse;">
@@ -1637,7 +1640,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     window.saveCustomerDetail = async function(customerId) {
         if (!customerId) return;
         const feedback = document.getElementById('detailSaveFeedback');
-        if (feedback) feedback.textContent = '';
+        const saveButton = document.getElementById('detailSaveButton');
+        if (feedback) {
+            feedback.textContent = 'Menyimpan...';
+            feedback.style.color = '#2563EB';
+        }
+        if (saveButton) saveButton.disabled = true;
 
         const payload = {
             nama_lengkap: document.getElementById('detailNamaLengkap')?.value.trim(),
@@ -1688,14 +1696,22 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 throw new Error(purchasesRes?.message || 'Gagal menyimpan data pembelian');
             }
 
-            if (feedback) feedback.textContent = 'Perubahan tersimpan.';
+            if (feedback) {
+                feedback.textContent = 'Perubahan tersimpan.';
+                feedback.style.color = '#16A34A';
+            }
             if (typeof loadCustomers === 'function') loadCustomers();
             if (typeof loadFailedWA === 'function') loadFailedWA();  // Refresh queue list
             showCustomerDetail({ ...customerRes.data, purchases: purchasesRes.data.purchases });
         } catch (error) {
             console.error('saveCustomerDetail error:', error);
-            if (feedback) feedback.textContent = 'Gagal menyimpan perubahan.';
+            if (feedback) {
+                feedback.textContent = 'Gagal menyimpan perubahan.';
+                feedback.style.color = '#DC2626';
+            }
             alert(error.message || 'Gagal menyimpan perubahan.');
+        } finally {
+            if (saveButton) saveButton.disabled = false;
         }
     }
 

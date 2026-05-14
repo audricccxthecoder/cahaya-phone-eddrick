@@ -334,6 +334,8 @@ class WAWorker {
             // Mark the matching customer record so dashboard reflects "auto-reply delivered"
             const normalizedPhone = sanitizePhone(row.phone);
             const legacyPhone = normalizedPhone.startsWith('62') ? '+' + normalizedPhone : normalizedPhone;
+            const localPhone = normalizedPhone.startsWith('62') ? '0' + normalizedPhone.slice(2) : normalizedPhone;
+            const plainPhone = normalizedPhone.startsWith('62') ? normalizedPhone.slice(2) : normalizedPhone;
             await db.query(
                 `UPDATE customers
                  SET wa_sent = TRUE,
@@ -342,8 +344,8 @@ class WAWorker {
                          ELSE status
                      END,
                      updated_at = NOW()
-                 WHERE whatsapp = $1 OR whatsapp = $2`,
-                [normalizedPhone, legacyPhone]
+                 WHERE whatsapp = $1 OR whatsapp = $2 OR whatsapp = $3 OR whatsapp = $4`,
+                [normalizedPhone, legacyPhone, localPhone, plainPhone]
             ).catch(() => {});
 
             this.autoReplyMsgsSinceBreak += 1;
