@@ -519,6 +519,52 @@ function formatWaktu(date) {
     return new Date(date).toLocaleString('id-ID', { timeZone: TIMEZONE });
 }
 
+function showAdminToast(message, type = 'success') {
+    const existing = document.getElementById('adminToastNotification');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'adminToastNotification';
+    toast.textContent = message;
+    toast.style.position = 'fixed';
+    toast.style.top = '22px';
+    toast.style.right = '22px';
+    toast.style.zIndex = '9999';
+    toast.style.maxWidth = '320px';
+    toast.style.padding = '14px 18px';
+    toast.style.borderRadius = '12px';
+    toast.style.boxShadow = '0 20px 60px rgba(0,0,0,0.12)';
+    toast.style.color = '#111827';
+    toast.style.fontSize = '13px';
+    toast.style.fontWeight = '600';
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-10px)';
+    toast.style.transition = 'opacity 180ms ease-out, transform 180ms ease-out';
+
+    if (type === 'success') {
+        toast.style.background = '#DEF7EC';
+        toast.style.border = '1px solid #34D399';
+    } else if (type === 'error') {
+        toast.style.background = '#FEE2E2';
+        toast.style.border = '1px solid #F87171';
+    } else {
+        toast.style.background = '#F8FAFC';
+        toast.style.border = '1px solid #D1D5DB';
+    }
+
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+    });
+
+    window.setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-10px)';
+        window.setTimeout(() => toast.remove(), 220);
+    }, 4200);
+}
+
 // Helper: get the relevant activity date for a customer.
 // - Belanja: latest purchase date
 // - Chat Only: latest incoming message date
@@ -1700,9 +1746,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 feedback.textContent = 'Perubahan tersimpan.';
                 feedback.style.color = '#16A34A';
             }
+            closeModal();
+            showAdminToast('Perubahan customer berhasil disimpan.', 'success');
             if (typeof loadCustomers === 'function') loadCustomers();
             if (typeof loadFailedWA === 'function') loadFailedWA();  // Refresh queue list
-            showCustomerDetail({ ...customerRes.data, purchases: purchasesRes.data.purchases });
         } catch (error) {
             console.error('saveCustomerDetail error:', error);
             if (feedback) {
@@ -2481,7 +2528,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
         let html = header;
         html += '<div style="max-height:300px;overflow-y:auto;">';
-        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Tipe</th><th>Antrian</th><th>Status</th><th>Aksi</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Antrian</th><th>Aksi</th></tr></thead><tbody>';
         res.data.forEach(c => {
             // Per-row dispatch context:
             //   auto_dispatch=TRUE   → system akan handle, button disabled
@@ -2490,17 +2537,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const isAuto = c.log_auto_dispatch === true;
             const isSending = c.log_status === 'SENDING' || _waManualSendingId === c.id;
             const queueCount = c.queue_count || 0;
-
-            let statusBadge;
-            if (isSending) {
-                statusBadge = '<span style="background:#DBEAFE;color:#1D4ED8;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Mengirim...</span>';
-            } else if (isAuto) {
-                statusBadge = '<span style="background:#FEF3C7;color:#92400E;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Antrian Otomatis</span>';
-            } else if (c.log_auto_dispatch === false) {
-                statusBadge = '<span style="background:#F3F4F6;color:#374151;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Menunggu Manual</span>';
-            } else {
-                statusBadge = '<span style="background:#FEE2E2;color:#991B1B;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;">Gagal</span>';
-            }
 
             // Per spec: auto rows have button TRULY disabled (visual differentiation).
             // Manual rows stay PRESSABLE even when blocked by out-of-hours or auto-pending —
@@ -2523,9 +2559,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             html += `<tr>
                 <td>${esc(c.nama_lengkap)}</td>
                 <td>${esc(c.whatsapp)}</td>
-                <td><span class="badge">${esc(c.tipe || 'Belanja')}</span></td>
                 <td style="text-align:center;font-weight:600;color:#B91C1C;">${queueCount}x</td>
-                <td>${statusBadge}</td>
                 <td><button class="btn-small" style="${btnStyle}" ${btnAttrs}>${btnLabel}</button></td>
             </tr>`;
         });

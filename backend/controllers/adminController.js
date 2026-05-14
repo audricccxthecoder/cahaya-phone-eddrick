@@ -2110,6 +2110,12 @@ exports.retryWA = async (req, res) => {
                     message: 'Gagal masukkan pesan ke antrian: ' + (enqRes?.error || 'unknown')
                 });
             }
+
+            await db.query(
+                'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
+                [customer.id]
+            ).catch(() => {});
+
             targetRowId = enqRes.log_id;
         } else {
             const row = pending[0];
@@ -2119,6 +2125,12 @@ exports.retryWA = async (req, res) => {
                     message: 'Pesan ini sudah dalam antrian otomatis. Sistem akan kirim sendiri saat jam operasional.'
                 });
             }
+
+            await db.query(
+                'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
+                [customer.id]
+            ).catch(() => {});
+
             targetRowId = row.id;
         }
 
