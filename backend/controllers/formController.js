@@ -204,12 +204,13 @@ exports.submitForm = async (req, res) => {
 
                 if (!waResult || !waResult.success) {
                     console.warn('⚠️ enqueueAutoReply returned non-success:', waResult?.error);
-                    if (waResult?.registered === false || /Invalid phone number|Nomor tidak terdaftar/i.test(waResult?.error || '')) {
-                        await db.query(
-                            'UPDATE customers SET wa_sent = NULL WHERE id = $1 AND wa_sent IS NOT TRUE',
-                            [customerId]
-                        ).catch(() => {});
-                    }
+                    const invalidNumber = waResult?.registered === false || /Invalid phone number|Nomor tidak terdaftar/i.test(waResult?.error || '');
+                    await db.query(
+                        invalidNumber
+                            ? 'UPDATE customers SET wa_sent = NULL WHERE id = $1 AND wa_sent IS NOT TRUE'
+                            : 'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
+                        [customerId]
+                    ).catch(() => {});
                 } else {
                     await db.query(
                         'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',

@@ -2095,7 +2095,8 @@ exports.retryWA = async (req, res) => {
                 { autoDispatch: true }
             );
             if (!enqRes || !enqRes.success) {
-                if (enqRes?.registered === false || /Invalid phone number|Nomor tidak terdaftar/i.test(enqRes?.error || '')) {
+                const invalidNumber = enqRes?.registered === false || /Invalid phone number|Nomor tidak terdaftar/i.test(enqRes?.error || '');
+                if (invalidNumber) {
                     await db.query(
                         'UPDATE customers SET wa_sent = NULL WHERE id = $1 AND wa_sent IS NOT TRUE',
                         [customer.id]
@@ -2105,6 +2106,12 @@ exports.retryWA = async (req, res) => {
                         message: enqRes.error || 'Nomor tidak terdaftar di WhatsApp'
                     });
                 }
+
+                await db.query(
+                    'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
+                    [customer.id]
+                ).catch(() => {});
+
                 return res.status(500).json({
                     success: false,
                     message: 'Gagal masukkan pesan ke antrian: ' + (enqRes?.error || 'unknown')
