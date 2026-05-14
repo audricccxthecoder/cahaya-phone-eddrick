@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS purchases (
     qty                 INT          DEFAULT 1,
     nama_sales          VARCHAR(100),
     metode_pembayaran   VARCHAR(50),
+    tahu_dari           VARCHAR(50),
     source              VARCHAR(20)  DEFAULT 'Website',
     created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
 );
@@ -338,6 +339,7 @@ SELECT
     (COALESCE(p.harga, 0) * COALESCE(p.qty, 1))                            AS subtotal,
     p.nama_sales,
     p.metode_pembayaran,
+    p.tahu_dari,
     p.source,
     (p.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Makassar')         AS purchase_date_wita,
     p.created_at                                                            AS purchase_date_utc
