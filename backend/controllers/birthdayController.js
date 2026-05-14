@@ -483,3 +483,4 @@ exports.cronCheckBirthdays = async function() {
         console.error('[Birthday] Cron error:', err.message);
     }
 };
+

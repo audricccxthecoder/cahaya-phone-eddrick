@@ -1579,34 +1579,84 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     }
 
     function renderPurchaseEditor(customer) {
-        detailCustomerDraft = {
-            id: customer.id,
-            purchases: (customer.purchases || []).map(p => ({
-                id: p.id,
-                merk_unit: p.merk_unit || '',
-                tipe_unit: p.tipe_unit || '',
-                harga: p.harga || '',
-                qty: p.qty || 1,
-                nama_sales: p.nama_sales || '',
-                metode_pembayaran: p.metode_pembayaran || '',
-                source: p.source || '',
-                deleted: false
-            }))
-        };
+        if (customer) {
+            detailCustomerDraft = {
+                id: customer.id,
+                purchases: (customer.purchases || []).map(p => ({
+                    id: p.id,
+                    merk_unit: p.merk_unit || '',
+                    tipe_unit: p.tipe_unit || '',
+                    harga: p.harga || '',
+                    qty: p.qty || 1,
+                    nama_sales: p.nama_sales || '',
+                    metode_pembayaran: p.metode_pembayaran || '',
+                    source: p.source || '',
+                    deleted: false,
+                    isEditing: false
+                }))
+            };
+        }
+
+        if (!detailCustomerDraft) return;
 
         const editor = document.getElementById('purchaseEditor');
         if (!editor) return;
 
         const rowsHtml = detailCustomerDraft.purchases.map((p, index) => {
+            if (p.deleted) return '';
+
+            if (!p.isEditing) {
+                return `
+                    <tr data-purchase-id="${p.id || ''}" data-index="${index}">
+                        <td colspan="7" style="padding:0;border-bottom:1px solid #F5F3F0;">
+                            <div style="margin:12px;padding:16px;border:1px solid #E5E7EB;border-radius:16px;background:#FFFFFF;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;">
+                                <div style="display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:12px;">
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Merk HP</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;">${esc(p.merk_unit || '-')}</div>
+                                    </div>
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Tipe HP</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;">${esc(p.tipe_unit || '-')}</div>
+                                    </div>
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Qty</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;text-align:center;">${esc(p.qty)}</div>
+                                    </div>
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Harga</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;text-align:right;">${esc(p.harga || '-')}</div>
+                                    </div>
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Sales</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;">${esc(p.nama_sales || '-')}</div>
+                                    </div>
+                                    <div style="padding:12px 14px;border-radius:14px;background:#F8FAF7;">
+                                        <div style="font-size:11px;color:#6B7280;font-weight:700;text-transform:uppercase;letter-spacing:.04em;">Pembayaran</div>
+                                        <div style="margin-top:6px;font-size:14px;color:#111827;">${esc(p.metode_pembayaran || '-')}</div>
+                                    </div>
+                                </div>
+                                <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;">
+                                    <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button" style="background:#E0F2FE;color:#0369A1;border:1px solid rgba(59,130,246,0.18);">Edit</button>
+                                    <button class="btn-small" onclick="deletePurchaseRow(this)" type="button" style="background:#FECACA;color:#991B1B;">Hapus</button>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
             return `
-                <tr data-purchase-id="${p.id}" data-index="${index}">
+                <tr data-purchase-id="${p.id || ''}" data-index="${index}">
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-merk" type="text" value="${esc(p.merk_unit)}" placeholder="Merk" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-tipe" type="text" value="${esc(p.tipe_unit)}" placeholder="Tipe" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;"><input class="purchase-qty" type="number" min="1" value="${esc(p.qty)}" style="width:80px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:center;" /></td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;"><input class="purchase-harga" type="number" step="0.01" value="${esc(p.harga)}" placeholder="0" style="width:110px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:right;" /></td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-sales" type="text" value="${esc(p.nama_sales)}" placeholder="Sales" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
                     <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-payment" type="text" value="${esc(p.metode_pembayaran)}" placeholder="Pembayaran" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
-                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;">
+                    <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+                        <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button" style="background:#E0F2FE;color:#0369A1;border:1px solid rgba(59,130,246,0.18);">Simpan</button>
+                        <button class="btn-small" onclick="cancelPurchaseEdit(this)" type="button" style="background:#F3F4F6;color:#374151;border:1px solid rgba(156,163,175,0.3);">Batal</button>
                         <button class="btn-small" onclick="deletePurchaseRow(this)" style="background:#FECACA;color:#991B1B;">Hapus</button>
                     </td>
                 </tr>
@@ -1631,7 +1681,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                             <th style="text-align:center;padding:10px 8px;border-bottom:1px solid #EDE8E3;color:#8C8078;font-weight:600;font-size:11px;text-transform:uppercase;">Aksi</th>
                         </tr></thead>
                         <tbody id="purchaseEditorRows">
-                            ${rowsHtml}
+                            ${rowsHtml || '<tr><td colspan="7" style="padding:20px 16px;color:#525252;font-size:14px;">Belum ada data pembelian. Klik Tambah Pembelian untuk mulai.</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -1641,7 +1691,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
     window.addPurchaseRow = function() {
         if (!detailCustomerDraft) return;
-        const nextIndex = detailCustomerDraft.purchases.length;
         detailCustomerDraft.purchases.push({
             id: null,
             merk_unit: '',
@@ -1651,36 +1700,67 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             nama_sales: '',
             metode_pembayaran: '',
             source: '',
-            deleted: false
+            deleted: false,
+            isEditing: true
         });
+        renderPurchaseEditor();
+    }
 
-        const rowsContainer = document.getElementById('purchaseEditorRows');
-        if (!rowsContainer) return;
+    window.togglePurchaseEdit = function(button) {
+        const row = button.closest('tr');
+        if (!row) return;
+        const index = Number(row.dataset.index);
+        const purchase = detailCustomerDraft?.purchases[index];
+        if (!purchase) return;
+        if (purchase.isEditing) {
+            const values = getPurchaseRowValues(row, purchase);
+            Object.assign(purchase, values);
+            purchase.isEditing = false;
+        } else {
+            purchase.isEditing = true;
+        }
+        renderPurchaseEditor();
+    }
 
-        const rowHtml = `
-            <tr data-purchase-id="" data-index="${nextIndex}">
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-merk" type="text" value="" placeholder="Merk" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-tipe" type="text" value="" placeholder="Tipe" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:center;"><input class="purchase-qty" type="number" min="1" value="1" style="width:80px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:center;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;text-align:right;"><input class="purchase-harga" type="number" step="0.01" value="" placeholder="0" style="width:110px;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;text-align:right;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-sales" type="text" value="" placeholder="Sales" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;"><input class="purchase-payment" type="text" value="" placeholder="Pembayaran" style="width:100%;padding:8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;" /></td>
-                <td style="padding:10px 8px;border-bottom:1px solid #F5F3F0;white-space:nowrap;"><button class="btn-small" onclick="deletePurchaseRow(this)" style="background:#FECACA;color:#991B1B;">Hapus</button></td>
-            </tr>
-        `;
-        rowsContainer.insertAdjacentHTML('beforeend', rowHtml);
+    window.cancelPurchaseEdit = function(button) {
+        const row = button.closest('tr');
+        if (!row) return;
+        const index = Number(row.dataset.index);
+        const purchase = detailCustomerDraft?.purchases[index];
+        if (!purchase) return;
+        if (!purchase.id) {
+            detailCustomerDraft.purchases.splice(index, 1);
+        } else {
+            purchase.isEditing = false;
+        }
+        renderPurchaseEditor();
     }
 
     window.deletePurchaseRow = function(button) {
         const row = button.closest('tr');
         if (!row) return;
-        const purchaseId = row.dataset.purchaseId;
-        if (purchaseId) {
-            row.dataset.deleted = 'true';
-            row.style.display = 'none';
+        const index = Number(row.dataset.index);
+        const purchase = detailCustomerDraft?.purchases[index];
+        if (!purchase) return;
+        if (purchase.id) {
+            purchase.deleted = true;
         } else {
-            row.remove();
+            detailCustomerDraft.purchases.splice(index, 1);
         }
+        renderPurchaseEditor();
+    }
+
+    function getPurchaseRowValues(row, item) {
+        if (!row) return item;
+        return {
+            merk_unit: row.querySelector('.purchase-merk')?.value.trim() || item.merk_unit || null,
+            tipe_unit: row.querySelector('.purchase-tipe')?.value.trim() || item.tipe_unit || null,
+            harga: row.querySelector('.purchase-harga')?.value || item.harga || null,
+            qty: row.querySelector('.purchase-qty')?.value || item.qty || 1,
+            nama_sales: row.querySelector('.purchase-sales')?.value.trim() || item.nama_sales || null,
+            metode_pembayaran: row.querySelector('.purchase-payment')?.value.trim() || item.metode_pembayaran || null,
+            source: item.source || ''
+        };
     }
 
     window.saveCustomerDetail = async function(customerId) {
@@ -1704,24 +1784,29 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             status: document.getElementById('detailStatus')?.value
         };
 
-        const purchaseRows = Array.from(document.querySelectorAll('#purchaseEditorRows tr'));
-        const purchases = purchaseRows.map(row => {
-            const deleted = row.dataset.deleted === 'true';
-            const id = row.dataset.purchaseId ? Number(row.dataset.purchaseId) : null;
+        const purchases = detailCustomerDraft?.purchases.map((item, index) => {
+            if (item.deleted && item.id) {
+                return { id: item.id, deleted: true };
+            }
+            if (item.deleted) {
+                return null;
+            }
+            const row = document.querySelector(`#purchaseEditorRows tr[data-index="${index}"]`);
+            const values = getPurchaseRowValues(row, item);
             return {
-                id,
-                deleted,
-                merk_unit: row.querySelector('.purchase-merk')?.value.trim() || null,
-                tipe_unit: row.querySelector('.purchase-tipe')?.value.trim() || null,
-                harga: row.querySelector('.purchase-harga')?.value || null,
-                qty: row.querySelector('.purchase-qty')?.value || 1,
-                nama_sales: row.querySelector('.purchase-sales')?.value.trim() || null,
-                metode_pembayaran: row.querySelector('.purchase-payment')?.value.trim() || null,
-                source: row.querySelector('.purchase-payment')?.value.trim() || null
+                id: item.id || null,
+                deleted: false,
+                merk_unit: values.merk_unit,
+                tipe_unit: values.tipe_unit,
+                harga: values.harga,
+                qty: values.qty,
+                nama_sales: values.nama_sales,
+                metode_pembayaran: values.metode_pembayaran,
+                source: values.source
             };
         }).filter(item => {
+            if (!item) return false;
             if (item.deleted && item.id) return true;
-            if (item.deleted) return false;
             return item.merk_unit || item.tipe_unit || item.harga || item.qty;
         });
 
