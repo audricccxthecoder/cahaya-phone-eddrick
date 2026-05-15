@@ -102,12 +102,12 @@ async function enqueueTodayBirthdays() {
 async function getBirthdayToday() {
     const result = await db.query(`
         SELECT c.id, c.nama_lengkap, c.whatsapp, c.tanggal_lahir, c.merk_unit, c.tipe_unit,
+               c.opted_in,
                bg.id as greeting_id, bg.status as greeting_status, bg.sent_at, bg.error as greeting_error, bg.dispatch_mode
         FROM customers c
         LEFT JOIN birthday_greetings bg
             ON bg.customer_id = c.id AND bg.greeting_year = EXTRACT(YEAR FROM (NOW() AT TIME ZONE 'Asia/Makassar'))
         WHERE c.tanggal_lahir IS NOT NULL
-          AND c.opted_in IS NOT FALSE
           AND (
             -- Normal case: month + day both match today
             (EXTRACT(MONTH FROM c.tanggal_lahir) = EXTRACT(MONTH FROM (NOW() AT TIME ZONE 'Asia/Makassar'))

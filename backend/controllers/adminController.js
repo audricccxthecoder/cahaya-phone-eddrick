@@ -592,12 +592,13 @@ exports.saveCustomerPurchases = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Field purchases harus dalam format array' });
         }
 
-        const { rows: customerRows } = await db.query('SELECT id, whatsapp FROM customers WHERE id = $1', [id]);
+        const { rows: customerRows } = await db.query('SELECT id, nama_lengkap, whatsapp FROM customers WHERE id = $1', [id]);
         if (customerRows.length === 0) {
             return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
         }
 
         const customerPhone = customerRows[0].whatsapp;
+        const customerName = customerRows[0].nama_lengkap;
         const existingRows = await db.query('SELECT id FROM purchases WHERE customer_id = $1', [id]);
         const existingIds = new Set(existingRows.rows.map(r => r.id));
 
@@ -691,6 +692,22 @@ exports.saveCustomerPurchases = async (req, res) => {
              FROM purchases WHERE customer_id = $1 ORDER BY created_at DESC`,
             [id]
         );
+
+        // Enqueue one auto-reply message per new purchase insertion
+        if (inserts.length > 0) {
+            try {
+                const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
+                const isAutoOn = toggleRes.rows.length > 0 && toggleRes.rows[0].value === 'true';
+                for (let i = 0; i < inserts.length; i++) {
+                    await whatsappService.enqueueAutoReply(
+                        { nama_lengkap: customerName, whatsapp: customerPhone },
+                        { autoDispatch: isAutoOn }
+                    ).catch(e => console.warn(`[Purchase] Enqueue auto-reply failed: ${e.message}`));
+                }
+            } catch (e) {
+                console.warn('[Purchase] Auto-reply enqueue error:', e.message);
+            }
+        }
 
         res.json({
             success: true,
@@ -3296,5 +3313,28 @@ exports.setAutoToggle = async (req, res) => {
     } catch (error) {
         console.error('❌ setAutoToggle error:', error);
         res.status(500).json({ success: false, message: 'Gagal update pengaturan' });
+    }
+};
+
+/**
+ * GET /api/admin/purchases/metadata
+ * Returns distinct merk_unit and metode_pembayaran values for dropdown hints.
+ */
+exports.getPurchaseMetadata = async (req, res) => {
+    try {
+        const [merkRes, pembayaranRes] = await Promise.all([
+            db.query(`SELECT DISTINCT merk_unit FROM purchases WHERE merk_unit IS NOT NULL AND merk_unit != '' ORDER BY merk_unit`),
+            db.query(`SELECT DISTINCT metode_pembayaran FROM purchases WHERE metode_pembayaran IS NOT NULL AND metode_pembayaran != '' ORDER BY metode_pembayaran`)
+        ]);
+        res.json({
+            success: true,
+            data: {
+                merk_units: merkRes.rows.map(r => r.merk_unit),
+                metode_pembayaran: pembayaranRes.rows.map(r => r.metode_pembayaran)
+            }
+        });
+    } catch (error) {
+        console.error('❌ getPurchaseMetadata error:', error);
+        res.status(500).json({ success: false, message: 'Gagal mengambil metadata pembelian' });
     }
 };

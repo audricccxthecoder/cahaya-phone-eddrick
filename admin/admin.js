@@ -583,6 +583,7 @@ function customerActivityDate(c) {
 let admin = JSON.parse(localStorage.getItem('admin') || '{}');
 let allCustomers = [];
 let allMessages = [];
+let purchaseMetadata = { merk_units: [], metode_pembayaran: [] };
 
 // Read CSRF token from cookie. Returns empty string if not present (e.g. logged out).
 function getCsrfToken() {
@@ -1430,6 +1431,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
     // Status is now fully automatic — no manual update needed
 
+    async function fetchPurchaseMetadata() {
+        try {
+            const res = await apiCall('/admin/purchases/metadata');
+            if (res && res.success && res.data) {
+                purchaseMetadata = res.data;
+            }
+        } catch (e) { /* non-critical, keep empty arrays */ }
+    }
+
     // View customer detail — with loading state & error feedback
     window.viewCustomer = async function(customerId) {
         console.log(`👁️ Viewing customer ${customerId}`);
@@ -1440,6 +1450,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         const detail = document.getElementById('customerDetail');
         detail.innerHTML = '<div class="loading">Memuat data customer...</div>';
         modal.classList.add('show');
+
+        // Refresh metadata each time modal opens so dropdowns stay current
+        fetchPurchaseMetadata();
 
         try {
             const result = await apiCall(`/admin/customers/${customerId}`);
@@ -1683,7 +1696,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
                                     <div>
                                         <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Merk HP</div>
-                                        <input class="purchase-merk" type="text" value="${esc(p.merk_unit)}" placeholder="Merk"
+                                        <input class="purchase-merk" type="text" list="merkDatalist" value="${esc(p.merk_unit)}" placeholder="Merk"
                                                style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
                                                onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
                                                onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
@@ -1718,7 +1731,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                     </div>
                                     <div>
                                         <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Pembayaran</div>
-                                        <input class="purchase-payment" type="text" value="${esc(p.metode_pembayaran)}" placeholder="Cash / Transfer / dll"
+                                        <input class="purchase-payment" type="text" list="pembayaranDatalist" value="${esc(p.metode_pembayaran)}" placeholder="Cash / Transfer / dll"
                                                style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
                                                onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
                                                onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
@@ -1755,7 +1768,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
             </div>` : '';
 
+        const merkOptions = purchaseMetadata.merk_units.map(m => `<option value="${esc(m)}">`).join('');
+        const pembayaranOptions = purchaseMetadata.metode_pembayaran.map(m => `<option value="${esc(m)}">`).join('');
+
         editor.innerHTML = `
+            <datalist id="merkDatalist">${merkOptions}</datalist>
+            <datalist id="pembayaranDatalist">${pembayaranOptions}</datalist>
             <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <div style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</div>
@@ -1933,8 +1951,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (feedback) { feedback.textContent = 'Tersimpan!'; feedback.style.color = '#16A34A'; }
             showAdminToast('Riwayat pembelian berhasil disimpan.', 'success');
             if (detailCustomerDraft) {
-                if (purchasesRes.purchases) {
-                    detailCustomerDraft.purchases = purchasesRes.purchases.map(p => ({ ...p, isEditing: false, deleted: false }));
+                if (purchasesRes.data?.purchases) {
+                    detailCustomerDraft.purchases = purchasesRes.data.purchases.map(p => ({ ...p, isEditing: false, deleted: false }));
                 } else {
                     detailCustomerDraft.purchases = detailCustomerDraft.purchases
                         .filter(p => !p.deleted)
@@ -2997,7 +3015,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 return;
             }
 
-            const pending = customers.filter(c => !c.greeting_id || c.greeting_status === 'failed');
+            const pending = customers.filter(c => c.opted_in !== false && (!c.greeting_id || c.greeting_status === 'failed'));
             document.getElementById('sendAllBirthdayBtn').style.display = pending.length > 0 ? '' : 'none';
 
             let html = `<table style="width:100%;border-collapse:collapse;"><thead><tr>
@@ -3013,7 +3031,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 let statusBadge = '';
                 let actionBtn = '';
 
-                if (c.greeting_status === 'sent') {
+                if (c.opted_in === false) {
+                    statusBadge = '<span style="background:#F3F4F6;color:#6B7280;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;">Opted Out</span>';
+                    actionBtn = '<span style="font-size:11px;color:#9CA3AF;">Tidak bisa dikirim</span>';
+                } else if (c.greeting_status === 'sent') {
                     statusBadge = '<span style="background:#DCFCE7;color:#16A34A;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;">Terkirim</span>';
                     if (c.sent_at) {
                         try {

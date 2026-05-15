@@ -122,6 +122,7 @@ router.get('/admin/pipeline/monthly', authMiddleware, adminController.getPipelin
 
 // Customers
 router.get('/admin/customers', authMiddleware, adminController.getCustomers);
+router.get('/admin/purchases/metadata', authMiddleware, adminController.getPurchaseMetadata);
 router.get('/admin/customers/export', authMiddleware, adminController.exportContacts);
 router.get('/admin/customers/export/vcf', authMiddleware, adminController.exportVCard);
 router.patch('/admin/customers/:id/status', authMiddleware, auditLog('update_customer_status'), adminController.updateCustomerStatus);

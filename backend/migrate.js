@@ -288,6 +288,7 @@
         )
       `);
       await client.query(`ALTER TABLE birthday_greetings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
+      await client.query(`ALTER TABLE birthday_greetings ADD COLUMN IF NOT EXISTS dispatch_mode VARCHAR(10) DEFAULT 'manual'`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_bg_customer ON birthday_greetings (customer_id)`);
       await client.query(`CREATE INDEX IF NOT EXISTS idx_bg_year ON birthday_greetings (greeting_year)`);
       console.log('✅ Table birthday_greetings created/verified');
