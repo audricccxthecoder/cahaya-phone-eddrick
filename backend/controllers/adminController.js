@@ -701,7 +701,7 @@ exports.saveCustomerPurchases = async (req, res) => {
                 for (let i = 0; i < inserts.length; i++) {
                     await whatsappService.enqueueAutoReply(
                         { nama_lengkap: customerName, whatsapp: customerPhone },
-                        { autoDispatch: isAutoOn }
+                        { autoDispatch: isAutoOn, skipNumberCheck: true }
                     ).catch(e => console.warn(`[Purchase] Enqueue auto-reply failed: ${e.message}`));
                 }
             } catch (e) {

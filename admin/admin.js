@@ -1696,10 +1696,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
                                     <div>
                                         <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Merk HP</div>
-                                        <input class="purchase-merk" type="text" list="merkDatalist" value="${esc(p.merk_unit)}" placeholder="Merk"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
+                                        ${(function(){
+                                            const MERKS=['iPhone','Samsung','Xiaomi','Oppo','Tecno','Realme','Infinix','Nokia'];
+                                            const cur=(p.merk_unit||'').trim();
+                                            const curL=cur.toLowerCase();
+                                            const match=MERKS.find(m=>m.toLowerCase()===curL);
+                                            const extra=cur&&!match?`<option value="${esc(cur)}" selected>${esc(cur)}</option>`:'';
+                                            const opts=MERKS.map(m=>`<option value="${esc(m)}"${m.toLowerCase()===curL?' selected':''}>${esc(m)}</option>`).join('');
+                                            return `<select class="purchase-merk" style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;cursor:pointer;">${extra}<option value="">-- Pilih Merk --</option>${opts}</select>`;
+                                        })()}
                                     </div>
                                     <div>
                                         <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Tipe HP</div>
@@ -1731,10 +1736,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                                     </div>
                                     <div>
                                         <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Pembayaran</div>
-                                        <input class="purchase-payment" type="text" list="pembayaranDatalist" value="${esc(p.metode_pembayaran)}" placeholder="Cash / Transfer / dll"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
+                                        ${(function(){
+                                            const PAYS=['Paid Cash','Paid Credit - Akulaku','Paid Credit - Avanto','Paid Credit - FinancePlus','Paid Credit - Home Credit Indonesia','Paid Credit - Indodana','Paid Credit - KreditPlus','Paid Credit - Kredivo','Paid Credit - Shopeepay Later','Kartu Kredit','Kartu Debit'];
+                                            const cur=(p.metode_pembayaran||'').trim();
+                                            const curL=cur.toLowerCase();
+                                            const match=PAYS.find(m=>m.toLowerCase()===curL);
+                                            const extra=cur&&!match?`<option value="${esc(cur)}" selected>${esc(cur)}</option>`:'';
+                                            const opts=PAYS.map(m=>`<option value="${esc(m)}"${m.toLowerCase()===curL?' selected':''}>${esc(m)}</option>`).join('');
+                                            return `<select class="purchase-payment" style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;cursor:pointer;">${extra}<option value="">-- Pilih Pembayaran --</option>${opts}</select>`;
+                                        })()}
                                     </div>
                                 </div>
                                 <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:10px;border-top:1px solid #E5E7EB;">
@@ -1768,12 +1778,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
             </div>` : '';
 
-        const merkOptions = purchaseMetadata.merk_units.map(m => `<option value="${esc(m)}">`).join('');
-        const pembayaranOptions = purchaseMetadata.metode_pembayaran.map(m => `<option value="${esc(m)}">`).join('');
-
         editor.innerHTML = `
-            <datalist id="merkDatalist">${merkOptions}</datalist>
-            <datalist id="pembayaranDatalist">${pembayaranOptions}</datalist>
             <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <div style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</div>

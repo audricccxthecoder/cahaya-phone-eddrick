@@ -123,7 +123,7 @@ class WhatsAppService {
     // and respects 08:00-22:00 WITA working hours. Customer-facing form returns
     // success immediately; the actual WA send happens minutes later.
     // ============================================
-    async enqueueAutoReply(customer, { autoDispatch = true } = {}) {
+    async enqueueAutoReply(customer, { autoDispatch = true, skipNumberCheck = false } = {}) {
         const formattedNumber = sanitizePhone(customer.whatsapp);
         if (!formattedNumber || !formattedNumber.startsWith('62')) {
             return { success: false, error: 'Invalid phone number' };
@@ -134,14 +134,16 @@ class WhatsAppService {
             return { success: false, error: 'Customer telah opt-out', opted_out: true };
         }
 
-        const numberCheck = await this.isNumberRegistered(formattedNumber);
-        if (numberCheck.registered === false) {
-            return {
-                success: false,
-                error: numberCheck.error || 'Nomor tidak terdaftar di WhatsApp',
-                registered: false,
-                unchecked: !!numberCheck.unchecked
-            };
+        if (!skipNumberCheck) {
+            const numberCheck = await this.isNumberRegistered(formattedNumber);
+            if (numberCheck.registered === false) {
+                return {
+                    success: false,
+                    error: numberCheck.error || 'Nomor tidak terdaftar di WhatsApp',
+                    registered: false,
+                    unchecked: !!numberCheck.unchecked
+                };
+            }
         }
 
         // Pipeline: spintax → {nama} replace → done.
