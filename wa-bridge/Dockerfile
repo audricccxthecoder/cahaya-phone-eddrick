@@ -11,4 +11,4 @@ RUN mkdir -p wa-session
 
 EXPOSE 3001
 
-CMD ["node", "index.js"]
+CMD ["node", "--max-old-space-size=128", "--optimize-for-size", "index.js"]

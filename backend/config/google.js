@@ -3,7 +3,8 @@
 // OAuth 2.0 + People API for auto-saving contacts
 // ============================================
 
-const { google } = require('googleapis');
+const { OAuth2Client } = require('google-auth-library');
+const { people: peopleApi } = require('@googleapis/people');
 const db = require('./database');
 require('dotenv').config();
 
@@ -15,7 +16,7 @@ class GoogleContactsService {
     }
 
     getOAuth2Client() {
-        return new google.auth.OAuth2(
+        return new OAuth2Client(
             this.clientId,
             this.clientSecret,
             this.redirectUri
@@ -131,7 +132,7 @@ class GoogleContactsService {
         const auth = await this.getAuthenticatedClient();
         if (!auth) return null;
 
-        const people = google.people({ version: 'v1', auth });
+        const people = peopleApi({ version: 'v1', auth });
         return this.findContactByPhone(people, phone);
     }
 
@@ -159,7 +160,7 @@ class GoogleContactsService {
             // Force token refresh if needed
             await auth.getAccessToken();
 
-            const people = google.people({ version: 'v1', auth });
+            const people = peopleApi({ version: 'v1', auth });
 
             // Format phone: ensure +62 prefix
             let phone = customer.whatsapp || '';

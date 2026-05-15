@@ -113,7 +113,7 @@ let isShuttingDown    = false;
 // ============================================
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '50kb' }));
 
 function authCheck(req, res, next) {
     const secret = req.headers['x-wa-secret'] || req.query.secret;
