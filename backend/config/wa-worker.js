@@ -158,6 +158,7 @@ class WAWorker {
         this.birthdayBreakUntil = 0;
         this.nextBirthdayAllowedAt = 0;
         this.birthdayNextBreakAt = 20;   // will be rerolled on first _ensureDailyProfile
+        this.birthdayLastQueueDate = null; // WITA date of last queue reset — for daily warm-up
 
         // Daily anti-ban profile — re-rolled every day in WITA time. All delay/break
         // ranges are SAMPLED ONCE PER DAY from the ranges above, so today's tempo
@@ -776,6 +777,21 @@ class WAWorker {
 
         // Gate 2: in a break
         if (now < this.birthdayBreakUntil) return;
+
+        // Daily warm-up reset — first time _processBirthdayQueue is entered on a new
+        // WITA day, apply a full profile delay BEFORE the first send. This ensures
+        // even the very first message of the queue has anti-ban spacing, not fired
+        // immediately when cron enqueues it at 09:00.
+        const todayWita = this._todayKeyWITA();
+        if (this.birthdayLastQueueDate !== todayWita) {
+            this.birthdayLastQueueDate = todayWita;
+            this.birthdayMsgsSinceBreak = 0;
+            const profile = this._ensureDailyProfile().birthday;
+            const jitter = this._randInt(-CONFIG.birthday.jitterMs, CONFIG.birthday.jitterMs);
+            this.nextBirthdayAllowedAt = Date.now() + Math.max(60_000, profile.base + jitter);
+            console.log(`[WA Worker] 🎂 Birthday queue warm-up for ${todayWita} — delay ${Math.round((this.nextBirthdayAllowedAt - Date.now()) / 1000)}s before first send`);
+            return;
+        }
 
         // Gate 3: inter-message delay not yet elapsed
         if (now < this.nextBirthdayAllowedAt) return;
