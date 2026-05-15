@@ -822,6 +822,30 @@ class WAWorker {
             client.release();
         }
 
+        // Check number registration before sending. Unregistered numbers are marked
+        // failed immediately (no retry) — same logic as manual birthday sends in
+        // birthdayController.sendBirthdayMessage.
+        const numberCheck = await whatsappService.isNumberRegistered(row.whatsapp);
+        if (!numberCheck.registered) {
+            if (numberCheck.unchecked) {
+                // Bridge unreachable — put back to pending, retry next tick
+                await db.query(
+                    `UPDATE birthday_greetings SET status = 'pending', updated_at = NOW() WHERE id = $1`,
+                    [row.greeting_id]
+                ).catch(() => {});
+                return;
+            }
+            const errMsg = `Nomor ${row.whatsapp} tidak terdaftar di WhatsApp`;
+            await db.query(
+                `UPDATE birthday_greetings SET status = 'failed', error = $1, updated_at = NOW() WHERE id = $2`,
+                [errMsg, row.greeting_id]
+            ).catch(() => {});
+            console.warn(`[WA Worker] 🎂❌ ${row.nama_lengkap}: ${errMsg}`);
+            this.birthdayMsgsSinceBreak += 1;
+            this.nextBirthdayAllowedAt = Date.now() + 5_000;
+            return;
+        }
+
         // Build message — spintax first, then {nama}/{umur} replace (same pipeline
         // as birthdayController.sendBirthdayMessage so manual/auto are identical).
         let finalMessage;

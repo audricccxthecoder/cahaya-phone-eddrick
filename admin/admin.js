@@ -1567,8 +1567,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
             </div>
             <div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
-                <button id="detailSaveButton" class="btn-small" onclick="saveCustomerDetail(${customer.id})" style="min-width:140px;">Simpan Perubahan</button>
-                <span id="detailSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
+                <button id="detailInfoSaveButton" class="btn-small" onclick="saveCustomerInfo(${customer.id})" style="min-width:160px;">Simpan Perubahan</button>
+                <span id="detailInfoSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
             </div>
             <!-- Status Legend -->
             <div style="margin-top:16px;padding:12px 16px;background:#FAFAF8;border:1px solid #EDE8E3;border-radius:8px;">
@@ -1695,6 +1695,10 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                         </tbody>
                     </table>
                 </div>
+                <div style="margin-top:14px;display:flex;gap:12px;align-items:center;">
+                    <button id="purchaseSaveButton" class="btn-small" onclick="savePurchases(${detailCustomerDraft?.id})" type="button" style="min-width:180px;">Simpan Riwayat Pembelian</button>
+                    <span id="purchaseSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
+                </div>
             </div>
         `;
     }
@@ -1773,14 +1777,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         };
     }
 
-    window.saveCustomerDetail = async function(customerId) {
+    window.saveCustomerInfo = async function(customerId) {
         if (!customerId) return;
-        const feedback = document.getElementById('detailSaveFeedback');
-        const saveButton = document.getElementById('detailSaveButton');
-        if (feedback) {
-            feedback.textContent = 'Menyimpan...';
-            feedback.style.color = '#2563EB';
-        }
+        const feedback = document.getElementById('detailInfoSaveFeedback');
+        const saveButton = document.getElementById('detailInfoSaveButton');
+        if (feedback) { feedback.textContent = 'Menyimpan...'; feedback.style.color = '#2563EB'; }
         if (saveButton) saveButton.disabled = true;
 
         const payload = {
@@ -1794,13 +1795,38 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             status: document.getElementById('detailStatus')?.value
         };
 
-        const purchases = detailCustomerDraft?.purchases.map((item, index) => {
-            if (item.deleted && item.id) {
-                return { id: item.id, deleted: true };
+        try {
+            const customerRes = await apiCall(`/admin/customers/${customerId}`, {
+                method: 'PATCH',
+                body: JSON.stringify(payload)
+            });
+            if (!customerRes || !customerRes.success) {
+                throw new Error(customerRes?.message || 'Gagal menyimpan data customer');
             }
-            if (item.deleted) {
-                return null;
-            }
+            if (feedback) { feedback.textContent = 'Tersimpan!'; feedback.style.color = '#16A34A'; }
+            closeModal();
+            showAdminToast('Info customer berhasil disimpan.', 'success');
+            if (typeof loadCustomers === 'function') loadCustomers();
+            if (typeof loadFailedWA === 'function') loadFailedWA();
+        } catch (error) {
+            console.error('saveCustomerInfo error:', error);
+            if (feedback) { feedback.textContent = 'Gagal menyimpan.'; feedback.style.color = '#DC2626'; }
+            alert(error.message || 'Gagal menyimpan perubahan.');
+        } finally {
+            if (saveButton) saveButton.disabled = false;
+        }
+    }
+
+    window.savePurchases = async function(customerId) {
+        if (!customerId) return;
+        const feedback = document.getElementById('purchaseSaveFeedback');
+        const saveButton = document.getElementById('purchaseSaveButton');
+        if (feedback) { feedback.textContent = 'Menyimpan...'; feedback.style.color = '#2563EB'; }
+        if (saveButton) saveButton.disabled = true;
+
+        const purchases = (detailCustomerDraft?.purchases || []).map((item, index) => {
+            if (item.deleted && item.id) return { id: item.id, deleted: true };
+            if (item.deleted) return null;
             const row = document.querySelector(`#purchaseEditorRows tr[data-index="${index}"]`);
             const values = getPurchaseRowValues(row, item);
             return {
@@ -1821,14 +1847,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         });
 
         try {
-            const customerRes = await apiCall(`/admin/customers/${customerId}`, {
-                method: 'PATCH',
-                body: JSON.stringify(payload)
-            });
-            if (!customerRes || !customerRes.success) {
-                throw new Error(customerRes?.message || 'Gagal menyimpan data customer');
-            }
-
             const purchasesRes = await apiCall(`/admin/customers/${customerId}/purchases`, {
                 method: 'PUT',
                 body: JSON.stringify({ purchases })
@@ -1836,22 +1854,24 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (!purchasesRes || !purchasesRes.success) {
                 throw new Error(purchasesRes?.message || 'Gagal menyimpan data pembelian');
             }
-
-            if (feedback) {
-                feedback.textContent = 'Perubahan tersimpan.';
-                feedback.style.color = '#16A34A';
+            if (feedback) { feedback.textContent = 'Tersimpan!'; feedback.style.color = '#16A34A'; }
+            showAdminToast('Riwayat pembelian berhasil disimpan.', 'success');
+            if (detailCustomerDraft) {
+                if (purchasesRes.purchases) {
+                    detailCustomerDraft.purchases = purchasesRes.purchases.map(p => ({ ...p, isEditing: false, deleted: false }));
+                } else {
+                    detailCustomerDraft.purchases = detailCustomerDraft.purchases
+                        .filter(p => !p.deleted)
+                        .map(p => ({ ...p, isEditing: false }));
+                }
+                renderPurchaseEditor();
             }
-            closeModal();
-            showAdminToast('Perubahan customer berhasil disimpan.', 'success');
             if (typeof loadCustomers === 'function') loadCustomers();
-            if (typeof loadFailedWA === 'function') loadFailedWA();  // Refresh queue list
+            if (typeof loadFailedWA === 'function') loadFailedWA();
         } catch (error) {
-            console.error('saveCustomerDetail error:', error);
-            if (feedback) {
-                feedback.textContent = 'Gagal menyimpan perubahan.';
-                feedback.style.color = '#DC2626';
-            }
-            alert(error.message || 'Gagal menyimpan perubahan.');
+            console.error('savePurchases error:', error);
+            if (feedback) { feedback.textContent = 'Gagal menyimpan.'; feedback.style.color = '#DC2626'; }
+            alert(error.message || 'Gagal menyimpan riwayat pembelian.');
         } finally {
             if (saveButton) saveButton.disabled = false;
         }
@@ -2926,16 +2946,16 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                             statusBadge += `<br><span style="font-size:10px;color:#8C8078;">${jam} WITA</span>`;
                         } catch(e) {}
                     }
-                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id})" style="font-size:11px;padding:4px 12px;">Kirim Ulang</button>`;
+                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id}, this)" style="font-size:11px;padding:4px 12px;">Kirim Ulang</button>`;
                 } else if (c.greeting_status === 'failed') {
                     statusBadge = '<span style="background:#FEE2E2;color:#DC2626;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;">Gagal</span>';
                     if (c.greeting_error) {
                         statusBadge += `<br><span style="font-size:10px;color:#DC2626;" title="${c.greeting_error}">${c.greeting_error.length > 30 ? c.greeting_error.substring(0, 30) + '...' : c.greeting_error}</span>`;
                     }
-                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id})" style="font-size:11px;padding:4px 12px;">Kirim Ulang</button>`;
+                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id}, this)" style="font-size:11px;padding:4px 12px;">Kirim Ulang</button>`;
                 } else {
                     statusBadge = '<span style="background:#FEF3C7;color:#D97706;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;">Belum</span>';
-                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id})" style="font-size:11px;padding:4px 12px;">Kirim</button>`;
+                    actionBtn = `<button class="btn-small" onclick="sendBirthdayGreeting(${c.id}, this)" style="font-size:11px;padding:4px 12px;">Kirim</button>`;
                 }
 
                 html += `<tr>
@@ -2954,23 +2974,39 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         }
     }
 
-    window.sendBirthdayGreeting = async function(customerId) {
-        const result = await apiCall('/admin/birthday/send', {
-            method: 'POST',
-            body: JSON.stringify({ customer_id: customerId })
-        });
-        if (result && result.success) {
-            alert('Ucapan berhasil dikirim!');
-        } else {
-            const errMsg = result?.message || result?.error || 'Error';
-            if (errMsg.toLowerCase().includes('tidak terdaftar')) {
-                alert('⚠️ Gagal kirim: ' + errMsg + '\n\nNomor ini tidak bisa menerima pesan WhatsApp.');
-            } else {
-                alert('Gagal mengirim: ' + errMsg);
-            }
+    window.sendBirthdayGreeting = async function(customerId, btnEl) {
+        const originalText = btnEl ? btnEl.innerHTML : null;
+        if (btnEl) {
+            btnEl.disabled = true;
+            btnEl.innerHTML = '🔄 Mengirim...';
+            btnEl.style.opacity = '0.7';
         }
-        loadBirthdayToday();
-        loadBirthdayHistory();
+        try {
+            const result = await apiCall('/admin/birthday/send', {
+                method: 'POST',
+                body: JSON.stringify({ customer_id: customerId })
+            });
+            if (result && result.success) {
+                showAdminToast('Ucapan ulang tahun berhasil dikirim!', 'success');
+            } else {
+                const errMsg = result?.message || result?.error || 'Gagal mengirim';
+                if (result?.outside_working_hours) {
+                    showAdminToast('⏰ ' + errMsg, 'error');
+                } else if (errMsg.toLowerCase().includes('tidak terdaftar')) {
+                    showAdminToast('⚠️ Nomor tidak terdaftar di WhatsApp: ' + errMsg, 'error');
+                } else {
+                    showAdminToast('Gagal: ' + errMsg, 'error');
+                }
+            }
+        } finally {
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.innerHTML = originalText;
+                btnEl.style.opacity = '1';
+            }
+            loadBirthdayToday();
+            loadBirthdayHistory();
+        }
     };
 
     window.sendAllBirthdayGreetings = async function() {
@@ -2981,9 +3017,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
         const result = await apiCall('/admin/birthday/send-all', { method: 'POST' });
         if (result && result.success) {
-            alert(`Selesai! Terkirim: ${result.sent}, Gagal: ${result.failed}`);
+            showAdminToast(result.message || 'Ucapan masuk antrian. Pantau status di halaman ini.', 'success');
+        } else if (result?.outside_working_hours) {
+            showAdminToast('⏰ ' + (result.message || 'Di luar jam operasional'), 'error');
         } else {
-            alert('Error: ' + (result?.message || 'Gagal'));
+            showAdminToast('Error: ' + (result?.message || 'Gagal'), 'error');
         }
 
         btn.disabled = false;
