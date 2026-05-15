@@ -1371,11 +1371,21 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         if (merk) {
             const target = merk.toLowerCase();
             filtered = filtered.filter(c => {
-                const m = (c.merk_unit || '').toLowerCase();
-                const t = (c.tipe_unit || '').toLowerCase();
-                return m.includes(target) || t.includes(target);
+                // cek purchase utama (root)
+                const rootMatch = 
+                (c.merk_unit || '').toLowerCase().includes(target) ||
+                (c.tipe_unit || '').toLowerCase().includes(target);
+                if (rootMatch) return true;
+
+                // cek semua riwayat pembelian
+                const purchases = c.purchases || [];
+                return purchases.some(p => 
+                    (p. merk_unit || '').toLowerCase().includes(target) ||
+                    (p.tipe_unit || '').toLowerCase().includes(target)
+                );
             });
         }
+                    
         if (dateFrom) filtered = filtered.filter(c => new Date(customerActivityDate(c)) >= new Date(dateFrom));
         if (dateTo) {
             const to = new Date(dateTo);
