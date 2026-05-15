@@ -454,7 +454,7 @@ exports.getCustomers = async (req, res) => {
                 COALESCE(p.purchase_count, 0)::int as purchase_count,
                 COALESCE(p.total_spent, 0)::bigint as total_spent,
                 COALESCE(p.total_qty, 0)::int as total_qty,
-                p.last_purchase_at
+                p.last_purchase_at,
                 COALESCE(p.purchases_json, '[]'::json) as purchases
             FROM customers c
             LEFT JOIN (
@@ -462,7 +462,7 @@ exports.getCustomers = async (req, res) => {
                        COUNT(*) as purchase_count,
                        SUM(COALESCE(harga, 0) * COALESCE(qty, 1)) as total_spent,
                        SUM(COALESCE(qty, 1)) as total_qty,
-                       MAX(created_at) as last_purchase_at
+                       MAX(created_at) as last_purchase_at,
                        json_agg(
                            json_build_object(
                                 'id', id,
@@ -470,7 +470,7 @@ exports.getCustomers = async (req, res) => {
                                 'tipe_unit', tipe_unit,
                                 'harga', harga,
                                 'qty', qty
-                            )         
+                            ) ORDER BY created_at DESC       
                         ) as purchases_json    
                 FROM purchases GROUP BY customer_id
             ) p ON p.customer_id = c.id
