@@ -470,7 +470,7 @@ exports.getCustomers = async (req, res) => {
                                 'tipe_unit', tipe_unit,
                                 'harga', harga,
                                 'qty', qty
-                            ) ORDER BY created_at DESC
+                            )         
                         ) as purchases_json    
                 FROM purchases GROUP BY customer_id
             ) p ON p.customer_id = c.id
