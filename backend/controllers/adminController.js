@@ -464,19 +464,19 @@ exports.getCustomers = async (req, res) => {
                        SUM(COALESCE(qty, 1)) as total_qty,
                        MAX(created_at) as last_purchase_at
                        json_agg(
-                       json_build_object(
-                            'id', id,
-                            'merk_unit', merk_unit,
-                            'tipe_unit', tipe_unit,
-                            'harga', harga,
-                            'qty', qty,
-                       ) ORDER BY created_at DESC
-                    ) as purchases_json    
+                           json_build_object(
+                                'id', id,
+                                'merk_unit', merk_unit,
+                                'tipe_unit', tipe_unit,
+                                'harga', harga,
+                                'qty', qty
+                            ) ORDER BY created_at DESC
+                        ) as purchases_json    
                 FROM purchases GROUP BY customer_id
             ) p ON p.customer_id = c.id
             ORDER BY COALESCE(p.last_purchase_at, c.last_incoming_message_at, c.created_at) DESC`
         );
-        
+
         res.json({
             success: true,
             data: customers
