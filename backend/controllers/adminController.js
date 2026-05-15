@@ -29,7 +29,7 @@ const VALID_STATUSES = ['New', 'Contacted', 'Follow Up', 'Completed', 'Inactive'
 
 async function _syncCustomerSummary(customerId) {
     const { rows } = await db.query(
-        `SELECT merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, tahu_dari, source
+        `SELECT merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source
          FROM purchases
          WHERE customer_id = $1
          ORDER BY created_at DESC
@@ -40,7 +40,7 @@ async function _syncCustomerSummary(customerId) {
     if (rows.length === 0) {
         await db.query(
             `UPDATE customers SET merk_unit = NULL, tipe_unit = NULL, harga = NULL, qty = NULL,
-                nama_sales = NULL, metode_pembayaran = NULL, tahu_dari = NULL,
+                nama_sales = NULL, metode_pembayaran = NULL,
                 updated_at = NOW()
              WHERE id = $1`,
             [customerId]
@@ -57,12 +57,11 @@ async function _syncCustomerSummary(customerId) {
              qty = $4,
              nama_sales = $5,
              metode_pembayaran = $6,
-             tahu_dari = $7,
-             source = $8,
+             source = $7,
              updated_at = NOW()
-         WHERE id = $9`,
+         WHERE id = $8`,
         [latest.merk_unit, latest.tipe_unit, latest.harga, latest.qty,
-         latest.nama_sales, latest.metode_pembayaran, latest.tahu_dari, latest.source,
+         latest.nama_sales, latest.metode_pembayaran, latest.source,
          customerId]
     );
 }
@@ -618,6 +617,8 @@ exports.saveCustomerPurchases = async (req, res) => {
             }
         }
 
+        const remainingPurchases = purchases.filter(p => !p.deleted).length;
+
         const client = await db.connect();
         try {
             await client.query('BEGIN');
@@ -660,9 +661,6 @@ exports.saveCustomerPurchases = async (req, res) => {
                 );
             }
 
-            await _syncCustomerSummary(id);
-            const remainingPurchases = purchases.filter(p => !p.deleted).length;
-
             if (remainingPurchases > 0) {
                 // Re-buy / purchase update path: reset WA delivery status
                 // for registered numbers and mark order as completed again.
@@ -676,8 +674,6 @@ exports.saveCustomerPurchases = async (req, res) => {
                 );
             }
 
-            await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases);
-
             await client.query('COMMIT');
         } catch (err) {
             await client.query('ROLLBACK').catch(() => {});
@@ -685,6 +681,10 @@ exports.saveCustomerPurchases = async (req, res) => {
         } finally {
             client.release();
         }
+
+        // Sync customer summary and trim queue AFTER commit so they see committed data
+        await _syncCustomerSummary(id);
+        await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases);
 
         const { rows: updatedCustomer } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
         const { rows: updatedPurchases } = await db.query(
