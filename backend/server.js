@@ -238,6 +238,8 @@ if (process.env.VERCEL) {
         // doesn't match their auto_reply queue count (caused by past sync errors).
         try {
             const whatsappService = require('./config/whatsapp');
+            const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
+            const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
 
             const { rows: mismatches } = await db.query(`
                 SELECT c.id, c.nama_lengkap, c.whatsapp,
@@ -256,13 +258,13 @@ if (process.env.VERCEL) {
                 for (let i = 0; i < missing; i++) {
                     const result = await whatsappService.enqueueAutoReply(
                         { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
-                        { autoDispatch: false, skipNumberCheck: true }
+                        { autoDispatch: isAutoOn, skipNumberCheck: true }
                     ).catch(() => null);
                     if (result && result.success) totalCreated++;
                 }
             }
             if (totalCreated > 0) {
-                console.log(`[Boot] Queue reconciled: created ${totalCreated} missing entries (manual) for ${mismatches.length} customers`);
+                console.log(`[Boot] Queue reconciled: created ${totalCreated} missing entries (${isAutoOn ? 'auto' : 'manual'}) for ${mismatches.length} customers`);
             }
         } catch (reconcileErr) {
             console.warn('[Boot] Queue reconciliation failed:', reconcileErr.message);
