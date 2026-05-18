@@ -695,11 +695,13 @@ exports.saveCustomerPurchases = async (req, res) => {
             try {
                 const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
                 const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
+                console.log(`[Purchase] Enqueue ${inserts.length} auto-reply for ${customerPhone}: toggle=${isAutoOn ? 'ON' : 'OFF'} → auto_dispatch=${isAutoOn}`);
                 for (let i = 0; i < inserts.length; i++) {
-                    await whatsappService.enqueueAutoReply(
+                    const enqRes = await whatsappService.enqueueAutoReply(
                         { nama_lengkap: customerName, whatsapp: customerPhone },
                         { autoDispatch: isAutoOn, skipNumberCheck: true }
-                    ).catch(e => console.warn(`[Purchase] Enqueue auto-reply failed: ${e.message}`));
+                    ).catch(e => { console.warn(`[Purchase] Enqueue auto-reply failed: ${e.message}`); return null; });
+                    console.log(`[Purchase] Enqueue result #${i + 1}:`, enqRes?.success ? `OK (log_id=${enqRes.log_id}, auto=${enqRes.auto_dispatch})` : `FAIL (${enqRes?.error || 'null'})`);
                 }
             } catch (e) {
                 console.warn('[Purchase] Auto-reply enqueue error:', e.message);

@@ -126,17 +126,20 @@ class WhatsAppService {
     async enqueueAutoReply(customer, { autoDispatch = true, skipNumberCheck = false } = {}) {
         const formattedNumber = sanitizePhone(customer.whatsapp);
         if (!formattedNumber || !formattedNumber.startsWith('62')) {
+            console.warn(`[WA] enqueueAutoReply: invalid phone ${customer.whatsapp}`);
             return { success: false, error: 'Invalid phone number' };
         }
 
         const optedOut = await this._isOptedOut(formattedNumber);
         if (optedOut) {
+            console.log(`[WA] enqueueAutoReply: ${formattedNumber} opted out — skipping`);
             return { success: false, error: 'Customer telah opt-out', opted_out: true };
         }
 
         if (!skipNumberCheck) {
             const numberCheck = await this.isNumberRegistered(formattedNumber);
             if (numberCheck.registered === false) {
+                console.log(`[WA] enqueueAutoReply: ${formattedNumber} not registered — skipping`);
                 return {
                     success: false,
                     error: numberCheck.error || 'Nomor tidak terdaftar di WhatsApp',
@@ -146,9 +149,6 @@ class WhatsAppService {
             }
         }
 
-        // Pipeline: spintax → {nama} replace → done.
-        // Template can contain {Hi|Halo|Hai} {Kak|Bro}, etc — each enqueue resolves to a
-        // different concrete string, defeating WA's exact-match anti-spam fingerprinting.
         const { spinText } = require('./wa-worker');
         const tmpl = await this._getAutoReplyTemplate();
         let message = spinText(tmpl);
@@ -161,9 +161,10 @@ class WhatsAppService {
                  RETURNING id`,
                 [formattedNumber, message, !!autoDispatch]
             );
+            console.log(`[WA] enqueueAutoReply: OK → log_id=${rows[0].id} phone=${formattedNumber} auto_dispatch=${!!autoDispatch}`);
             return { success: true, queued: true, log_id: rows[0].id, auto_dispatch: !!autoDispatch };
         } catch (err) {
-            console.warn('[WA] enqueueAutoReply failed:', err.message);
+            console.warn('[WA] enqueueAutoReply INSERT failed:', err.message);
             return { success: false, error: err.message };
         }
     }

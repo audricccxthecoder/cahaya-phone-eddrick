@@ -197,9 +197,10 @@ exports.submitForm = async (req, res) => {
                 );
                 const autoReplyEnabled = setting.length === 0 || setting[0].value !== 'false';
 
+                console.log(`[Form] Enqueue auto-reply for ${cleanPhone}: toggle=${autoReplyEnabled ? 'ON' : 'OFF'} → auto_dispatch=${autoReplyEnabled}`);
                 const waResult = await whatsappService.enqueueAutoReply(
                     { nama_lengkap: finalName, whatsapp: cleanPhone },
-                    { autoDispatch: autoReplyEnabled }
+                    { autoDispatch: autoReplyEnabled, skipNumberCheck: true }
                 );
 
                 if (!waResult || !waResult.success) {
