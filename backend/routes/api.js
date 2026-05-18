@@ -159,6 +159,7 @@ router.post('/admin/wa/settings', authMiddleware, auditLog('update_wa_settings')
 router.get('/admin/wa/failed', authMiddleware, adminController.getFailedWA);
 router.post('/admin/wa/retry/:id', authMiddleware, adminController.retryWA);
 router.post('/admin/wa/retry-all', authMiddleware, adminController.retryAllWA);
+router.post('/admin/wa/reconcile-queue', authMiddleware, adminController.reconcileQueue);
 router.get('/admin/wa/log', authMiddleware, adminController.getWAMessageLog);
 
 // Birthday greetings

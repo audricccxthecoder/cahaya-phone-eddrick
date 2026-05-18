@@ -234,6 +234,42 @@ if (process.env.VERCEL) {
             console.warn('[Boot] Could not create views:', viewErr.message);
         }
 
+        // One-time queue reconciliation: fix any customers whose purchase count
+        // doesn't match their auto_reply queue count (caused by past sync errors).
+        try {
+            const whatsappService = require('./config/whatsapp');
+            const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
+            const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
+
+            const { rows: mismatches } = await db.query(`
+                SELECT c.id, c.nama_lengkap, c.whatsapp,
+                       COALESCE(p.cnt, 0)::int AS purchase_count,
+                       COALESCE(q.cnt, 0)::int AS queue_count
+                FROM customers c
+                LEFT JOIN (SELECT customer_id, COUNT(*) AS cnt FROM purchases GROUP BY customer_id) p ON p.customer_id = c.id
+                LEFT JOIN (SELECT phone, COUNT(*) AS cnt FROM whatsapp_logs WHERE type = 'auto_reply' GROUP BY phone) q ON q.phone = c.whatsapp
+                WHERE c.tipe = 'Belanja'
+                  AND COALESCE(p.cnt, 0) > COALESCE(q.cnt, 0)
+            `);
+
+            let totalCreated = 0;
+            for (const row of mismatches) {
+                const missing = row.purchase_count - row.queue_count;
+                for (let i = 0; i < missing; i++) {
+                    const result = await whatsappService.enqueueAutoReply(
+                        { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
+                        { autoDispatch: isAutoOn, skipNumberCheck: true }
+                    ).catch(() => null);
+                    if (result && result.success) totalCreated++;
+                }
+            }
+            if (totalCreated > 0) {
+                console.log(`[Boot] Queue reconciled: created ${totalCreated} missing entries for ${mismatches.length} customers`);
+            }
+        } catch (reconcileErr) {
+            console.warn('[Boot] Queue reconciliation failed:', reconcileErr.message);
+        }
+
         // Initialize WA service (HTTP adapter to wa-bridge)
         try {
             const whatsappService = require('./config/whatsapp');

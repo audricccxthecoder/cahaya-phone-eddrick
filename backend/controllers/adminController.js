@@ -2260,6 +2260,59 @@ exports.retryAllWA = async (req, res) => {
 };
 
 /**
+ * Reconcile queue: for each Belanja customer, compare purchase count vs
+ * auto_reply queue count. Create missing queue entries so the numbers match.
+ * Safe to call multiple times (idempotent — only creates what's missing).
+ *
+ * POST /api/admin/wa/reconcile-queue
+ */
+exports.reconcileQueue = async (req, res) => {
+    try {
+        const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
+        const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
+
+        const { rows: mismatches } = await db.query(`
+            SELECT c.id, c.nama_lengkap, c.whatsapp,
+                   COALESCE(p.cnt, 0)::int AS purchase_count,
+                   COALESCE(q.cnt, 0)::int AS queue_count
+            FROM customers c
+            LEFT JOIN (SELECT customer_id, COUNT(*) AS cnt FROM purchases GROUP BY customer_id) p ON p.customer_id = c.id
+            LEFT JOIN (SELECT phone, COUNT(*) AS cnt FROM whatsapp_logs WHERE type = 'auto_reply' GROUP BY phone) q ON q.phone = c.whatsapp
+            WHERE c.tipe = 'Belanja'
+              AND COALESCE(p.cnt, 0) > COALESCE(q.cnt, 0)
+            ORDER BY c.id
+        `);
+
+        let totalCreated = 0;
+        const details = [];
+
+        for (const row of mismatches) {
+            const missing = row.purchase_count - row.queue_count;
+            let created = 0;
+            for (let i = 0; i < missing; i++) {
+                const result = await whatsappService.enqueueAutoReply(
+                    { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
+                    { autoDispatch: isAutoOn, skipNumberCheck: true }
+                ).catch(e => ({ success: false, error: e.message }));
+                if (result && result.success) created++;
+            }
+            totalCreated += created;
+            details.push({ id: row.id, nama: row.nama_lengkap, purchases: row.purchase_count, had_queue: row.queue_count, created });
+        }
+
+        console.log(`[Reconcile] Checked ${mismatches.length} customers with mismatches, created ${totalCreated} queue entries`);
+        res.json({
+            success: true,
+            message: `${totalCreated} queue entries dibuat untuk ${mismatches.length} customer yang kurang`,
+            details
+        });
+    } catch (error) {
+        console.error('❌ reconcileQueue error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
  * Get WA message log (semua pengiriman WA tercatat di DB)
  * GET /api/admin/wa/log?limit=50&status=failed
  */
