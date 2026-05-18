@@ -2268,9 +2268,6 @@ exports.retryAllWA = async (req, res) => {
  */
 exports.reconcileQueue = async (req, res) => {
     try {
-        const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
-        const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
-
         const { rows: mismatches } = await db.query(`
             SELECT c.id, c.nama_lengkap, c.whatsapp,
                    COALESCE(p.cnt, 0)::int AS purchase_count,
@@ -2292,7 +2289,7 @@ exports.reconcileQueue = async (req, res) => {
             for (let i = 0; i < missing; i++) {
                 const result = await whatsappService.enqueueAutoReply(
                     { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
-                    { autoDispatch: isAutoOn, skipNumberCheck: true }
+                    { autoDispatch: false, skipNumberCheck: true }
                 ).catch(e => ({ success: false, error: e.message }));
                 if (result && result.success) created++;
             }
