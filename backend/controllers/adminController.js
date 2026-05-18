@@ -690,18 +690,7 @@ exports.saveCustomerPurchases = async (req, res) => {
             client.release();
         }
 
-        // Sync customer summary and trim queue AFTER commit so they see committed data
-        await _syncCustomerSummary(id);
-        await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases);
-
-        const { rows: updatedCustomer } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
-        const { rows: updatedPurchases } = await db.query(
-            `SELECT id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, created_at
-             FROM purchases WHERE customer_id = $1 ORDER BY created_at DESC`,
-            [id]
-        );
-
-        // Enqueue one auto-reply message per new purchase insertion
+        // Enqueue FIRST (right after commit) so sync/trim failures can't block it
         if (inserts.length > 0) {
             try {
                 const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
@@ -716,6 +705,17 @@ exports.saveCustomerPurchases = async (req, res) => {
                 console.warn('[Purchase] Auto-reply enqueue error:', e.message);
             }
         }
+
+        // Non-critical post-commit sync — failures logged but don't block response
+        try { await _syncCustomerSummary(id); } catch (e) { console.warn('[Purchase] _syncCustomerSummary failed:', e.message); }
+        try { await _trimCustomerAutoReplyQueue(customerPhone, remainingPurchases); } catch (e) { console.warn('[Purchase] _trimQueue failed:', e.message); }
+
+        const { rows: updatedCustomer } = await db.query('SELECT * FROM customers WHERE id = $1', [id]);
+        const { rows: updatedPurchases } = await db.query(
+            `SELECT id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, created_at
+             FROM purchases WHERE customer_id = $1 ORDER BY created_at DESC`,
+            [id]
+        );
 
         res.json({
             success: true,
