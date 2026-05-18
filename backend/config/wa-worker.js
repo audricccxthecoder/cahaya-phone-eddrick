@@ -399,6 +399,8 @@ class WAWorker {
     // RETRY FAILED (whatsapp_logs with next_retry_at due)
     // ============================================
     async _retryFailed() {
+        if (!this._isWorkingHours()) return;
+
         const client = await db.connect();
         try {
             await client.query('BEGIN');

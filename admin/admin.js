@@ -713,11 +713,17 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             // Update nav
             navItems.forEach(nav => nav.classList.remove('active'));
             item.classList.add('active');
-            
+
             // Update page
             pages.forEach(page => page.classList.remove('active'));
             document.getElementById(targetPage + 'Page').classList.add('active');
-            
+
+            // Stop WA polling when leaving waconnect page
+            if (targetPage !== 'waconnect') {
+                _waStopPolling();
+                _waStopAutoPoll();
+            }
+
             // Load page data
             if (targetPage === 'dashboard') {
                 loadDashboard();
@@ -2673,6 +2679,17 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     const WA_POLL_TIMEOUT_MS = 15 * 60_000;  // give up after 15 min
     let _waPollStartedAt = 0;
 
+    // Auto-poll: refresh every 30s when auto-dispatch entries exist so admin
+    // sees them disappear in real-time as the worker sends them.
+    let _waAutoPollId = null;
+    function _waStartAutoPoll() {
+        if (_waAutoPollId) return;
+        _waAutoPollId = setInterval(() => { loadFailedWA(); }, 30_000);
+    }
+    function _waStopAutoPoll() {
+        if (_waAutoPollId) { clearInterval(_waAutoPollId); _waAutoPollId = null; }
+    }
+
     function _waStopPolling() {
         if (_waPollIntervalId) { clearInterval(_waPollIntervalId); _waPollIntervalId = null; }
         _waManualSendingId = null;
@@ -2701,6 +2718,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         if (!res || !res.success || res.count === 0) {
             container.innerHTML = '<div class="no-data" style="color:#25D366;">Semua pesan berhasil terkirim ✓</div>';
             _waStopPolling();
+            _waStopAutoPoll();
             return;
         }
 
@@ -2714,6 +2732,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
 
         const autoRows = res.data.filter(c => c.is_auto);
         const manualRows = res.data.filter(c => !c.is_auto);
+
+        if (autoRows.length > 0 && isWorkingHours) {
+            _waStartAutoPoll();
+        } else {
+            _waStopAutoPoll();
+        }
         const totalEntries = res.data.reduce((s, c) => s + (c.queue_count || 0), 0);
 
         let header;
