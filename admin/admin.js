@@ -1614,6 +1614,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     nama_sales: p.nama_sales || '',
                     metode_pembayaran: p.metode_pembayaran || '',
                     source: p.source || '',
+                    created_at: p.created_at || null,
                     deleted: false,
                     isEditing: false
                 }))
@@ -1626,9 +1627,26 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         if (!editor) return;
 
         const fmtRp = v => { const n = Number(v); return (!n || isNaN(n)) ? '0' : new Intl.NumberFormat('id-ID').format(n); };
+        const fmtDate = v => { if (!v) return '-'; try { return new Date(v).toLocaleDateString('id-ID', { timeZone: 'Asia/Makassar' }); } catch(e) { return '-'; } };
         const nonDeleted = detailCustomerDraft.purchases.filter(p => !p.deleted);
         const totalValue = nonDeleted.reduce((s, p) => s + (Number(p.harga) || 0) * (Number(p.qty) || 1), 0);
         const totalQty   = nonDeleted.reduce((s, p) => s + (Number(p.qty) || 1), 0);
+
+        const summaryBox = nonDeleted.length > 0 ? `
+            <div style="background:#FFF9E6;border:1px solid #F0E6C0;border-radius:10px;padding:14px 18px;margin-bottom:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <div style="font-size:13px;font-weight:600;color:#1A1412;">Ringkasan Pembelian (${totalQty} unit total):</div>
+                    <div style="font-size:13px;font-weight:700;color:#1A1412;">Total: Rp${fmtRp(totalValue)}</div>
+                </div>
+                ${nonDeleted.map(p => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-top:1px solid rgba(0,0,0,0.05);">
+                        <span style="font-size:12px;color:#5C534B;">${fmtDate(p.created_at)}</span>
+                        <span style="font-size:12px;color:#5C534B;">${esc(p.merk_unit || '')} ${esc(p.tipe_unit || '')}${p.metode_pembayaran ? ' · ' + esc(p.metode_pembayaran) : ''}</span>
+                    </div>
+                `).join('')}
+            </div>` : '';
+
+        const hasAnyEditing = detailCustomerDraft.purchases.some(p => !p.deleted && p.isEditing);
 
         let vi = 0;
         const rowsHtml = detailCustomerDraft.purchases.map((p, index) => {
@@ -1636,166 +1654,132 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             vi++;
             const num = vi;
 
-            if (!p.isEditing) {
-                const subtotal = (Number(p.harga) || 0) * (Number(p.qty) || 1);
+            if (p.isEditing) {
                 return `
                     <tr data-purchase-id="${p.id || ''}" data-index="${index}">
-                        <td colspan="7" style="padding:5px 0;border:none;">
-                            <div style="border:1px solid #E5E7EB;border-radius:14px;overflow:hidden;background:#fff;transition:box-shadow .18s,transform .18s;"
-                                 onmouseover="this.style.boxShadow='0 6px 18px rgba(0,0,0,0.10)';this.style.transform='translateY(-1px)'"
-                                 onmouseout="this.style.boxShadow='none';this.style.transform='none'">
-                                <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 16px;background:linear-gradient(135deg,#F5F7FF 0%,#EEF2FF 100%);border-bottom:1px solid #E0E7FF;">
-                                    <div style="display:flex;align-items:center;gap:10px;">
-                                        <span style="background:#4F46E5;color:#fff;font-size:10px;font-weight:800;padding:3px 9px;border-radius:20px;letter-spacing:.05em;">#${num}</span>
-                                        <div>
-                                            <div style="font-size:14px;font-weight:700;color:#1A1412;">${esc(p.merk_unit || '')} <span style="color:#4F46E5;">${esc(p.tipe_unit || '')}</span></div>
-                                            <div style="font-size:11px;color:#8C8078;margin-top:1px;">${p.qty || 1} unit${Number(p.qty) > 1 ? ` &nbsp;·&nbsp; Subtotal <strong style="color:#B91C1C;">Rp ${fmtRp(subtotal)}</strong>` : ''}</div>
-                                        </div>
-                                    </div>
-                                    <div style="display:flex;align-items:center;gap:10px;">
-                                        <div style="text-align:right;">
-                                            <div style="font-size:15px;font-weight:800;color:#B91C1C;">Rp ${fmtRp(p.harga)}</div>
-                                            <div style="font-size:10px;color:#9CA3AF;">per unit</div>
-                                        </div>
-                                        <div style="display:flex;gap:5px;">
-                                            <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button"
-                                                    style="background:#EEF2FF;color:#4F46E5;border:1px solid #C7D2FE;font-size:12px;padding:5px 10px;border-radius:8px;">✏️ Edit</button>
-                                            <button class="btn-small" onclick="deletePurchaseRow(this)" type="button"
-                                                    style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;font-size:12px;padding:5px 10px;border-radius:8px;">🗑️</button>
-                                        </div>
-                                    </div>
+                        <td colspan="8" style="padding:8px 0;border:none;">
+                            <div style="border:2px solid #4F46E5;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 0 0 3px rgba(79,70,229,0.08);">
+                                <div style="background:linear-gradient(135deg,#EEF2FF 0%,#E0E7FF 100%);padding:8px 14px;border-bottom:1px solid #C7D2FE;">
+                                    <span style="font-size:12px;font-weight:700;color:#4F46E5;">Edit Pembelian #${num}</span>
                                 </div>
-                                <div style="display:grid;grid-template-columns:repeat(3,1fr);padding:10px 16px;gap:4px 0;">
-                                    <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
-                                        <span style="font-size:10px;color:#9CA3AF;font-weight:600;text-transform:uppercase;min-width:62px;">Sales</span>
-                                        <span style="font-size:12px;color:#374151;font-weight:500;">${esc(p.nama_sales || '-')}</span>
+                                <div style="padding:12px 14px;">
+                                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Merk HP</div>
+                                            ${(function(){
+                                                const MERKS=['iPhone','Samsung','Xiaomi','Oppo','Tecno','Realme','Infinix','Nokia'];
+                                                const cur=(p.merk_unit||'').trim();
+                                                const curL=cur.toLowerCase();
+                                                const match=MERKS.find(m=>m.toLowerCase()===curL);
+                                                const extra=cur&&!match?'<option value="'+esc(cur)+'" selected>'+esc(cur)+'</option>':'';
+                                                const opts=MERKS.map(m=>'<option value="'+esc(m)+'"'+(m.toLowerCase()===curL?' selected':'')+'>'+esc(m)+'</option>').join('');
+                                                return '<select class="purchase-merk" style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;">'+extra+'<option value="">-- Pilih --</option>'+opts+'</select>';
+                                            })()}
+                                        </div>
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Tipe HP</div>
+                                            <input class="purchase-tipe" type="text" value="${esc(p.tipe_unit)}" placeholder="Tipe"
+                                                   style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;"/>
+                                        </div>
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Qty</div>
+                                            <input class="purchase-qty" type="number" min="1" value="${esc(p.qty)}"
+                                                   style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;"/>
+                                        </div>
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Harga (Rp)</div>
+                                            <input class="purchase-harga" type="number" step="0.01" value="${esc(p.harga)}" placeholder="0"
+                                                   style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;"/>
+                                        </div>
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Sales</div>
+                                            <input class="purchase-sales" type="text" value="${esc(p.nama_sales)}" placeholder="Nama Sales"
+                                                   style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;"/>
+                                        </div>
+                                        <div>
+                                            <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:3px;">Pembayaran</div>
+                                            ${(function(){
+                                                const PAYS=['Paid Cash','Paid Credit - Akulaku','Paid Credit - Avanto','Paid Credit - FinancePlus','Paid Credit - Home Credit Indonesia','Paid Credit - Indodana','Paid Credit - KreditPlus','Paid Credit - Kredivo','Paid Credit - Shopeepay Later','Kartu Kredit','Kartu Debit'];
+                                                const cur=(p.metode_pembayaran||'').trim();
+                                                const curL=cur.toLowerCase();
+                                                const match=PAYS.find(m=>m.toLowerCase()===curL);
+                                                const extra=cur&&!match?'<option value="'+esc(cur)+'" selected>'+esc(cur)+'</option>':'';
+                                                const opts=PAYS.map(m=>'<option value="'+esc(m)+'"'+(m.toLowerCase()===curL?' selected':'')+'>'+esc(m)+'</option>').join('');
+                                                return '<select class="purchase-payment" style="width:100%;padding:7px 8px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;">'+extra+'<option value="">-- Pilih --</option>'+opts+'</select>';
+                                            })()}
+                                        </div>
                                     </div>
-                                    <div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
-                                        <span style="font-size:10px;color:#9CA3AF;font-weight:600;text-transform:uppercase;min-width:62px;">Bayar</span>
-                                        <span style="font-size:12px;color:#374151;font-weight:500;">${esc(p.metode_pembayaran || '-')}</span>
+                                    <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px;border-top:1px solid #E5E7EB;">
+                                        <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button"
+                                                style="background:#DCFCE7;color:#16A34A;border:1px solid #BBF7D0;font-size:12px;padding:5px 12px;border-radius:8px;">OK</button>
+                                        <button class="btn-small" onclick="cancelPurchaseEdit(this)" type="button"
+                                                style="background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB;font-size:12px;padding:5px 12px;border-radius:8px;">Batal</button>
+                                        <button class="btn-small" onclick="deletePurchaseRow(this)" type="button"
+                                                style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;font-size:12px;padding:5px 12px;border-radius:8px;">Hapus</button>
                                     </div>
-                                    ${p.source ? `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;">
-                                        <span style="font-size:10px;color:#9CA3AF;font-weight:600;text-transform:uppercase;min-width:62px;">Source</span>
-                                        <span style="font-size:12px;color:#374151;font-weight:500;">${esc(p.source)}</span>
-                                    </div>` : '<div></div>'}
                                 </div>
                             </div>
                         </td>
-                    </tr>
-                `;
+                    </tr>`;
             }
 
+            const subtotal = (Number(p.harga) || 0) * (Number(p.qty) || 1);
             return `
-                <tr data-purchase-id="${p.id || ''}" data-index="${index}">
-                    <td colspan="7" style="padding:5px 0;border:none;">
-                        <div style="border:2px solid #4F46E5;border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 0 0 3px rgba(79,70,229,0.08);">
-                            <div style="background:linear-gradient(135deg,#EEF2FF 0%,#E0E7FF 100%);padding:9px 16px;border-bottom:1px solid #C7D2FE;">
-                                <span style="font-size:12px;font-weight:700;color:#4F46E5;">✏️ Edit Pembelian #${num}</span>
-                            </div>
-                            <div style="padding:14px 16px;">
-                                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Merk HP</div>
-                                        ${(function(){
-                                            const MERKS=['iPhone','Samsung','Xiaomi','Oppo','Tecno','Realme','Infinix','Nokia'];
-                                            const cur=(p.merk_unit||'').trim();
-                                            const curL=cur.toLowerCase();
-                                            const match=MERKS.find(m=>m.toLowerCase()===curL);
-                                            const extra=cur&&!match?`<option value="${esc(cur)}" selected>${esc(cur)}</option>`:'';
-                                            const opts=MERKS.map(m=>`<option value="${esc(m)}"${m.toLowerCase()===curL?' selected':''}>${esc(m)}</option>`).join('');
-                                            return `<select class="purchase-merk" style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;cursor:pointer;">${extra}<option value="">-- Pilih Merk --</option>${opts}</select>`;
-                                        })()}
-                                    </div>
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Tipe HP</div>
-                                        <input class="purchase-tipe" type="text" value="${esc(p.tipe_unit)}" placeholder="Tipe"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
-                                    </div>
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Qty</div>
-                                        <input class="purchase-qty" type="number" min="1" value="${esc(p.qty)}"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
-                                    </div>
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Harga (Rp)</div>
-                                        <input class="purchase-harga" type="number" step="0.01" value="${esc(p.harga)}" placeholder="0"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#B91C1C';this.style.boxShadow='0 0 0 2px rgba(185,28,28,0.10)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
-                                    </div>
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Sales</div>
-                                        <input class="purchase-sales" type="text" value="${esc(p.nama_sales)}" placeholder="Nama Sales"
-                                               style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;transition:border-color .15s;"
-                                               onfocus="this.style.borderColor='#4F46E5';this.style.boxShadow='0 0 0 2px rgba(79,70,229,0.12)'"
-                                               onblur="this.style.borderColor='#E5E7EB';this.style.boxShadow='none'"/>
-                                    </div>
-                                    <div>
-                                        <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;margin-bottom:4px;">Pembayaran</div>
-                                        ${(function(){
-                                            const PAYS=['Paid Cash','Paid Credit - Akulaku','Paid Credit - Avanto','Paid Credit - FinancePlus','Paid Credit - Home Credit Indonesia','Paid Credit - Indodana','Paid Credit - KreditPlus','Paid Credit - Kredivo','Paid Credit - Shopeepay Later','Kartu Kredit','Kartu Debit'];
-                                            const cur=(p.metode_pembayaran||'').trim();
-                                            const curL=cur.toLowerCase();
-                                            const match=PAYS.find(m=>m.toLowerCase()===curL);
-                                            const extra=cur&&!match?`<option value="${esc(cur)}" selected>${esc(cur)}</option>`:'';
-                                            const opts=PAYS.map(m=>`<option value="${esc(m)}"${m.toLowerCase()===curL?' selected':''}>${esc(m)}</option>`).join('');
-                                            return `<select class="purchase-payment" style="width:100%;padding:8px 10px;border:1px solid #E5E7EB;border-radius:8px;font-size:13px;box-sizing:border-box;background:#fff;cursor:pointer;">${extra}<option value="">-- Pilih Pembayaran --</option>${opts}</select>`;
-                                        })()}
-                                    </div>
-                                </div>
-                                <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:10px;border-top:1px solid #E5E7EB;">
-                                    <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button"
-                                            style="background:#DCFCE7;color:#16A34A;border:1px solid #BBF7D0;font-size:12px;padding:6px 14px;border-radius:8px;">✓ Simpan Baris</button>
-                                    <button class="btn-small" onclick="cancelPurchaseEdit(this)" type="button"
-                                            style="background:#F3F4F6;color:#6B7280;border:1px solid #E5E7EB;font-size:12px;padding:6px 14px;border-radius:8px;">✕ Batal</button>
-                                    <button class="btn-small" onclick="deletePurchaseRow(this)" type="button"
-                                            style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;font-size:12px;padding:6px 14px;border-radius:8px;">🗑️ Hapus</button>
-                                </div>
-                            </div>
-                        </div>
+                <tr data-purchase-id="${p.id || ''}" data-index="${index}" style="border-bottom:1px solid #EDE8E3;">
+                    <td style="padding:10px 6px;font-size:12px;color:#5C534B;white-space:nowrap;">${fmtDate(p.created_at)}</td>
+                    <td style="padding:10px 6px;font-size:12px;font-weight:700;color:#1A1412;">${esc(p.merk_unit || '-')}</td>
+                    <td style="padding:10px 6px;font-size:12px;color:#374151;">${esc(p.tipe_unit || '-')}</td>
+                    <td style="padding:10px 6px;font-size:12px;color:#374151;text-align:center;">${p.qty || 1}</td>
+                    <td style="padding:10px 6px;font-size:12px;color:#374151;">Rp${fmtRp(p.harga)}</td>
+                    <td style="padding:10px 6px;font-size:12px;font-weight:700;color:#B91C1C;">Rp${fmtRp(subtotal)}</td>
+                    <td style="padding:10px 6px;font-size:12px;color:#374151;">${esc(p.nama_sales || '-')}</td>
+                    <td style="padding:10px 4px;white-space:nowrap;">
+                        <button class="btn-small" onclick="togglePurchaseEdit(this)" type="button"
+                                style="background:#EEF2FF;color:#4F46E5;border:1px solid #C7D2FE;font-size:11px;padding:4px 8px;border-radius:6px;">Edit</button>
+                        <button class="btn-small" onclick="deletePurchaseRow(this)" type="button"
+                                style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;font-size:11px;padding:4px 8px;border-radius:6px;">Hapus</button>
                     </td>
-                </tr>
-            `;
+                </tr>`;
         }).join('');
 
-        const summaryBar = nonDeleted.length > 0 ? `
-            <div style="display:flex;gap:0;background:linear-gradient(135deg,#F5F7FF,#EEF2FF);border:1px solid #E0E7FF;border-radius:12px;overflow:hidden;margin-bottom:14px;">
-                <div style="flex:1;padding:10px 16px;text-align:center;border-right:1px solid #E0E7FF;">
-                    <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Transaksi</div>
-                    <div style="font-size:18px;font-weight:800;color:#4F46E5;margin-top:2px;">${nonDeleted.length}x</div>
-                </div>
-                <div style="flex:2;padding:10px 16px;text-align:center;border-right:1px solid #E0E7FF;">
-                    <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Total Pembelian</div>
-                    <div style="font-size:18px;font-weight:800;color:#B91C1C;margin-top:2px;">Rp ${fmtRp(totalValue)}</div>
-                </div>
-                <div style="flex:1;padding:10px 16px;text-align:center;">
-                    <div style="font-size:10px;color:#6B7280;font-weight:600;text-transform:uppercase;letter-spacing:.04em;">Total Unit</div>
-                    <div style="font-size:18px;font-weight:800;color:#374151;margin-top:2px;">${totalQty} unit</div>
-                </div>
-            </div>` : '';
+        const tableHeader = nonDeleted.length > 0 && !hasAnyEditing ? `
+            <thead>
+                <tr style="border-bottom:2px solid #1A1412;">
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Tanggal</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Merk HP</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Tipe HP</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:center;">Qty</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Harga Satuan</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Subtotal</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Sales</th>
+                    <th style="padding:8px 6px;font-size:10px;font-weight:700;color:#1A1412;text-transform:uppercase;letter-spacing:.04em;text-align:left;">Aksi</th>
+                </tr>
+            </thead>` : '';
 
         editor.innerHTML = `
             <div style="margin-top:20px;padding-top:20px;border-top:2px solid #EDE8E3;">
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
-                    <div style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="font-size:15px;font-weight:700;color:#1A1412;">Riwayat Pembelian</span>
+                        ${nonDeleted.length > 0 ? '<span style="background:#B91C1C;color:#fff;font-size:11px;font-weight:700;padding:2px 10px;border-radius:12px;">' + nonDeleted.length + 'x transaksi</span>' : ''}
+                    </div>
                     <button class="btn-small" onclick="addPurchaseRow()" type="button"
                             style="background:linear-gradient(135deg,#4F46E5,#6366F1);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:opacity .18s;"
                             onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">+ Tambah Pembelian</button>
                 </div>
-                ${summaryBar}
-                <table style="width:100%;border-collapse:collapse;">
-                    <tbody id="purchaseEditorRows">
-                        ${rowsHtml || '<tr><td colspan="7" style="padding:32px 0;text-align:center;color:#9CA3AF;font-size:13px;">Belum ada data pembelian.<br><span style="font-size:12px;">Klik <strong>+ Tambah Pembelian</strong> untuk mulai.</span></td></tr>'}
-                    </tbody>
-                </table>
+                ${summaryBox}
+                <div style="overflow-x:auto;">
+                    <table style="width:100%;border-collapse:collapse;min-width:600px;">
+                        ${tableHeader}
+                        <tbody id="purchaseEditorRows">
+                            ${rowsHtml || '<tr><td colspan="8" style="padding:32px 0;text-align:center;color:#9CA3AF;font-size:13px;">Belum ada data pembelian.<br><span style="font-size:12px;">Klik <strong>+ Tambah Pembelian</strong> untuk mulai.</span></td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
                 <div style="margin-top:16px;display:flex;gap:12px;align-items:center;">
                     <button id="purchaseSaveButton" class="btn-small" onclick="savePurchases(${detailCustomerDraft?.id})" type="button"
-                            style="background:linear-gradient(135deg,#16A34A,#22C55E);color:#fff;border:none;min-width:190px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .18s;"
-                            onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">💾 Simpan Riwayat Pembelian</button>
+                            style="background:linear-gradient(135deg,#B91C1C,#DC2626);color:#fff;border:none;min-width:210px;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .18s;"
+                            onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Simpan Riwayat Pembelian</button>
                     <span id="purchaseSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
                 </div>
             </div>
