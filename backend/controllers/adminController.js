@@ -57,7 +57,7 @@ async function _syncCustomerSummary(customerId) {
              qty = $4,
              nama_sales = $5,
              metode_pembayaran = $6,
-             source = $7,
+             source = COALESCE($7, source, ''),
              updated_at = NOW()
          WHERE id = $8`,
         [latest.merk_unit, latest.tipe_unit, latest.harga, latest.qty,
