@@ -2035,36 +2035,21 @@ function _isWorkingHoursWITA() {
  */
 exports.getFailedWA = async (req, res) => {
     try {
-        // Get all pending queue entries grouped by customer with counts
         const { rows } = await db.query(
             `SELECT c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at,
-                    latest.latest_id AS log_id,
-                    latest.latest_status AS log_status,
-                    latest.latest_auto_dispatch AS log_auto_dispatch,
-                    stats.queue_count,
-                    stats.has_any_auto_true
+                    wl.auto_dispatch AS is_auto,
+                    COUNT(*)::int AS queue_count,
+                    MAX(wl.id) AS latest_log_id,
+                    (array_agg(wl.status ORDER BY wl.id DESC))[1] AS log_status
              FROM customers c
-             JOIN LATERAL (
-                 SELECT id AS latest_id,
-                        status AS latest_status,
-                        auto_dispatch AS latest_auto_dispatch
-                 FROM whatsapp_logs
-                 WHERE phone = c.whatsapp AND type = 'auto_reply'
-                 ORDER BY id DESC
-                 LIMIT 1
-             ) latest ON TRUE
-             JOIN LATERAL (
-                 SELECT COUNT(*)::int AS queue_count,
-                        bool_or(auto_dispatch) AS has_any_auto_true
-                 FROM whatsapp_logs
-                 WHERE phone = c.whatsapp AND type = 'auto_reply' AND status IN ('QUEUED','SENDING','FAILED')
-             ) stats ON TRUE
+             JOIN whatsapp_logs wl ON wl.phone = c.whatsapp
+                  AND wl.type = 'auto_reply'
+                  AND wl.status IN ('QUEUED','SENDING','FAILED')
              WHERE c.tipe = 'Belanja'
-               AND latest.latest_status IN ('QUEUED','SENDING','FAILED')
-             ORDER BY c.created_at DESC`
+             GROUP BY c.id, c.nama_lengkap, c.whatsapp, c.wa_sent, c.tipe, c.created_at, wl.auto_dispatch
+             ORDER BY wl.auto_dispatch DESC, c.created_at DESC`
         );
 
-        // Check if any auto_dispatch=TRUE rows are still pending
         const { rows: autoPending } = await db.query(
             `SELECT COUNT(*)::int AS cnt FROM whatsapp_logs
              WHERE type = 'auto_reply' AND status IN ('QUEUED','SENDING') AND auto_dispatch = TRUE`
@@ -2127,18 +2112,32 @@ exports.retryWA = async (req, res) => {
         const customer = cust[0];
         const cleanPhone = sanitizePhone(customer.whatsapp);
 
-        // 1. Find latest pending row for this customer (auto_reply)
-        const { rows: pending } = await db.query(
-            `SELECT id, auto_dispatch FROM whatsapp_logs
-             WHERE phone = $1 AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
-             ORDER BY id DESC LIMIT 1`,
+        // 1. Find oldest manual (auto_dispatch=FALSE) pending row for this customer
+        const { rows: manualPending } = await db.query(
+            `SELECT id FROM whatsapp_logs
+             WHERE phone = $1 AND type = 'auto_reply' AND status IN ('QUEUED','FAILED')
+               AND auto_dispatch = FALSE
+             ORDER BY id ASC LIMIT 1`,
             [cleanPhone]
         );
 
         let targetRowId;
-        if (pending.length === 0) {
-            // No pending row — likely a legacy customer or all rows already FAILED.
-            // Enqueue a fresh one with auto_dispatch=TRUE so worker takes it.
+        if (manualPending.length === 0) {
+            // No manual pending row — check if there's an auto row
+            const { rows: anyPending } = await db.query(
+                `SELECT id, auto_dispatch FROM whatsapp_logs
+                 WHERE phone = $1 AND type = 'auto_reply' AND status IN ('QUEUED','SENDING')
+                 ORDER BY id DESC LIMIT 1`,
+                [cleanPhone]
+            );
+            if (anyPending.length > 0 && anyPending[0].auto_dispatch === true) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Pesan ini sudah dalam antrian otomatis. Sistem akan kirim sendiri saat jam operasional.'
+                });
+            }
+
+            // No pending row at all — legacy/FAILED. Enqueue a fresh one.
             const enqRes = await whatsappService.enqueueAutoReply(
                 { nama_lengkap: customer.nama_lengkap, whatsapp: customer.whatsapp },
                 { autoDispatch: true }
@@ -2174,20 +2173,12 @@ exports.retryWA = async (req, res) => {
 
             targetRowId = enqRes.log_id;
         } else {
-            const row = pending[0];
-            if (row.auto_dispatch === true) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Pesan ini sudah dalam antrian otomatis. Sistem akan kirim sendiri saat jam operasional.'
-                });
-            }
-
             await db.query(
                 'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
                 [customer.id]
             ).catch(() => {});
 
-            targetRowId = row.id;
+            targetRowId = manualPending[0].id;
         }
 
         // 2. Priority gate — auto queue must drain first

@@ -2704,62 +2704,68 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             return;
         }
 
-        // If we were polling for a customer and they're no longer in the list → done
-        if (_waManualSendingId && !res.data.some(c => c.id === _waManualSendingId)) {
+        if (_waManualSendingId && !res.data.some(c => c.id === _waManualSendingId && !c.is_auto)) {
             _waStopPolling();
         }
 
-        // Auto-queue active anywhere? If yes, all manual buttons stay disabled.
         const autoPending = !!res.has_auto_pending;
-        const isWorkingHours = res.is_working_hours !== false;  // default true if missing
+        const isWorkingHours = res.is_working_hours !== false;
         const wh = res.working_hours || { start: 8, end: 22, tz: 'WITA' };
 
-        // Banner reasoning. Priority: outside-hours > auto-pending > generic count.
+        const autoRows = res.data.filter(c => c.is_auto);
+        const manualRows = res.data.filter(c => !c.is_auto);
+        const totalEntries = res.data.reduce((s, c) => s + (c.queue_count || 0), 0);
+
         let header;
         if (!isWorkingHours) {
-            header = `<p style="font-size:13px;color:#92400E;margin:0 0 12px;font-weight:600;">${res.count} pesan menunggu — di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}). Otomatis akan jalan saat jam buka. Tombol manual nonaktif sampai jam buka.</p>`;
-        } else if (autoPending) {
-            header = `<p style="font-size:13px;color:#B45309;margin:0 0 12px;font-weight:600;">${res.count} pesan menunggu — antrian otomatis sedang berjalan, tombol manual nonaktif sampai selesai</p>`;
+            header = `<p style="font-size:13px;color:#92400E;margin:0 0 12px;font-weight:600;">${totalEntries} pesan menunggu — di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz})</p>`;
+        } else if (autoRows.length > 0 && manualRows.length > 0) {
+            header = `<p style="font-size:13px;color:#5C534B;margin:0 0 12px;font-weight:600;">${totalEntries} pesan menunggu — ${autoRows.reduce((s,c)=>s+(c.queue_count||0),0)} otomatis, ${manualRows.reduce((s,c)=>s+(c.queue_count||0),0)} manual</p>`;
+        } else if (autoRows.length > 0) {
+            header = `<p style="font-size:13px;color:#B45309;margin:0 0 12px;font-weight:600;">${totalEntries} pesan dalam antrian otomatis</p>`;
         } else {
-            header = `<p style="font-size:13px;color:#B91C1C;margin:0 0 12px;font-weight:600;">${res.count} pesan gagal terkirim</p>`;
+            header = `<p style="font-size:13px;color:#B91C1C;margin:0 0 12px;font-weight:600;">${totalEntries} pesan menunggu kirim manual</p>`;
         }
 
         let html = header;
         html += '<div style="max-height:300px;overflow-y:auto;">';
-        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Antrian</th><th>Aksi</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>Nama</th><th>WhatsApp</th><th>Antrian</th><th>Tipe</th><th>Aksi</th></tr></thead><tbody>';
+
         res.data.forEach(c => {
-            // Per-row dispatch context:
-            //   auto_dispatch=TRUE   → system akan handle, button disabled
-            //   auto_dispatch=FALSE  → admin harus klik, button enabled (kecuali ada antrian auto)
-            //   auto_dispatch=null   → no pending row at all (rare/legacy), treat sebagai manual-enabled
-            const isAuto = c.log_auto_dispatch === true;
-            const isSending = c.log_status === 'SENDING' || _waManualSendingId === c.id;
+            const isAuto = c.is_auto === true;
+            const isSending = c.log_status === 'SENDING' || (!isAuto && _waManualSendingId === c.id);
             const queueCount = c.queue_count || 0;
 
-            // Per spec: auto rows have button TRULY disabled (visual differentiation).
-            // Manual rows stay PRESSABLE even when blocked by out-of-hours or auto-pending —
-            // clicking produces a clear notif from backend. Only currently-sending rows
-            // get a local visual lock to prevent double-clicks during the in-flight send.
-            const disableVisual = isAuto || isSending;
-            const btnLabel = isSending ? '⏳ Mengirim...' : 'Kirim Manual';
-            const btnStyle = disableVisual
-                ? 'padding:4px 12px;font-size:11px;opacity:0.45;cursor:not-allowed;'
-                : 'padding:4px 12px;font-size:11px;';
-            const btnTitle = isAuto ? `Sistem akan kirim otomatis (${queueCount} antrian)`
-                : isSending ? 'Sedang dikirim'
-                : !isWorkingHours ? `Di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}) — klik untuk konfirmasi`
-                : autoPending ? 'Antrian otomatis aktif — klik untuk konfirmasi'
-                : 'Kirim manual sekarang';
-            const btnAttrs = disableVisual
-                ? `disabled title="${esc(btnTitle)}"`
-                : `onclick="retrySingleWA(${c.id})" title="${esc(btnTitle)}"`;
+            if (isAuto) {
+                html += `<tr style="background:rgba(245,158,11,0.04);">
+                    <td>${esc(c.nama_lengkap)}</td>
+                    <td>${esc(c.whatsapp)}</td>
+                    <td style="text-align:center;font-weight:600;color:#B45309;">${queueCount}x</td>
+                    <td><span style="font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(245,158,11,0.12);color:#B45309;font-weight:600;">Otomatis</span></td>
+                    <td><button class="btn-small" style="padding:4px 12px;font-size:11px;opacity:0.4;cursor:not-allowed;" disabled title="Sistem akan kirim otomatis">${c.log_status === 'SENDING' ? '⏳ Mengirim...' : 'Otomatis'}</button></td>
+                </tr>`;
+            } else {
+                const disableVisual = isSending;
+                const btnLabel = isSending ? '⏳ Mengirim...' : 'Kirim Manual';
+                const btnStyle = disableVisual
+                    ? 'padding:4px 12px;font-size:11px;opacity:0.45;cursor:not-allowed;'
+                    : 'padding:4px 12px;font-size:11px;';
+                const btnTitle = isSending ? 'Sedang dikirim'
+                    : !isWorkingHours ? `Di luar jam operasional (${wh.start}:00–${wh.end}:00 ${wh.tz}) — klik untuk konfirmasi`
+                    : autoPending ? 'Antrian otomatis aktif — klik untuk konfirmasi'
+                    : 'Kirim manual sekarang';
+                const btnAttrs = disableVisual
+                    ? `disabled title="${esc(btnTitle)}"`
+                    : `onclick="retrySingleWA(${c.id})" title="${esc(btnTitle)}"`;
 
-            html += `<tr>
-                <td>${esc(c.nama_lengkap)}</td>
-                <td>${esc(c.whatsapp)}</td>
-                <td style="text-align:center;font-weight:600;color:#B91C1C;">${queueCount}x</td>
-                <td><button class="btn-small" style="${btnStyle}" ${btnAttrs}>${btnLabel}</button></td>
-            </tr>`;
+                html += `<tr>
+                    <td>${esc(c.nama_lengkap)}</td>
+                    <td>${esc(c.whatsapp)}</td>
+                    <td style="text-align:center;font-weight:600;color:#B91C1C;">${queueCount}x</td>
+                    <td><span style="font-size:11px;padding:2px 8px;border-radius:6px;background:rgba(185,28,28,0.08);color:#B91C1C;font-weight:600;">Manual</span></td>
+                    <td><button class="btn-small" style="${btnStyle}" ${btnAttrs}>${btnLabel}</button></td>
+                </tr>`;
+            }
         });
         html += '</tbody></table></div>';
         container.innerHTML = html;
