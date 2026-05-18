@@ -662,16 +662,24 @@ exports.saveCustomerPurchases = async (req, res) => {
             }
 
             if (remainingPurchases > 0) {
-                // Re-buy / purchase update path: reset WA delivery status
-                // for registered numbers and mark order as completed again.
-                await client.query(
-                    `UPDATE customers
-                     SET wa_sent = FALSE,
-                         status = 'Completed',
-                         updated_at = NOW()
-                     WHERE id = $1 AND wa_sent IS NOT NULL`,
-                    [id]
-                );
+                if (inserts.length > 0) {
+                    await client.query(
+                        `UPDATE customers
+                         SET wa_sent = FALSE,
+                             status = 'Completed',
+                             updated_at = NOW()
+                         WHERE id = $1 AND wa_sent IS NOT NULL`,
+                        [id]
+                    );
+                } else {
+                    await client.query(
+                        `UPDATE customers
+                         SET status = 'Completed',
+                             updated_at = NOW()
+                         WHERE id = $1`,
+                        [id]
+                    );
+                }
             }
 
             await client.query('COMMIT');
@@ -697,7 +705,7 @@ exports.saveCustomerPurchases = async (req, res) => {
         if (inserts.length > 0) {
             try {
                 const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
-                const isAutoOn = toggleRes.rows.length > 0 && toggleRes.rows[0].value === 'true';
+                const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
                 for (let i = 0; i < inserts.length; i++) {
                     await whatsappService.enqueueAutoReply(
                         { nama_lengkap: customerName, whatsapp: customerPhone },
