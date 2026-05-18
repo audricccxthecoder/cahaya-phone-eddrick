@@ -2270,9 +2270,6 @@ exports.retryAllWA = async (req, res) => {
  */
 exports.reconcileQueue = async (req, res) => {
     try {
-        const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
-        const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
-
         const { rows: mismatches } = await db.query(`
             SELECT c.id, c.nama_lengkap, c.whatsapp,
                    COALESCE(p.cnt, 0)::int AS purchase_count,
@@ -2294,7 +2291,7 @@ exports.reconcileQueue = async (req, res) => {
             for (let i = 0; i < missing; i++) {
                 const result = await whatsappService.enqueueAutoReply(
                     { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
-                    { autoDispatch: isAutoOn, skipNumberCheck: true }
+                    { autoDispatch: false, skipNumberCheck: true }
                 ).catch(e => ({ success: false, error: e.message }));
                 if (result && result.success) created++;
             }
@@ -2302,10 +2299,10 @@ exports.reconcileQueue = async (req, res) => {
             details.push({ id: row.id, nama: row.nama_lengkap, purchases: row.purchase_count, had_queue: row.queue_count, created });
         }
 
-        console.log(`[Reconcile] Checked ${mismatches.length} customers with mismatches, created ${totalCreated} queue entries`);
+        console.log(`[Reconcile] Checked ${mismatches.length} customers with mismatches, created ${totalCreated} manual queue entries`);
         res.json({
             success: true,
-            message: `${totalCreated} queue entries dibuat untuk ${mismatches.length} customer yang kurang`,
+            message: `${totalCreated} queue entries (manual) dibuat untuk ${mismatches.length} customer yang kurang`,
             details
         });
     } catch (error) {

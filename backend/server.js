@@ -234,13 +234,35 @@ if (process.env.VERCEL) {
             console.warn('[Boot] Could not create views:', viewErr.message);
         }
 
-        // One-time queue reconciliation: fix any customers whose purchase count
-        // doesn't match their auto_reply queue count (caused by past sync errors).
+        // Cleanup: convert stale boot-reconciliation auto entries to manual.
+        // Previous deploys auto-created QUEUED auto_dispatch=TRUE entries that
+        // may have used the wrong toggle state. Convert them to manual so the
+        // admin controls when they're sent.
         try {
-            const whatsappService = require('./config/whatsapp');
-            const toggleRes = await db.query(`SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`);
-            const isAutoOn = toggleRes.rows.length === 0 || toggleRes.rows[0].value !== 'false';
+            const { rowCount: converted } = await db.query(`
+                UPDATE whatsapp_logs
+                SET auto_dispatch = FALSE, updated_at = NOW()
+                WHERE type = 'auto_reply'
+                  AND status = 'QUEUED'
+                  AND auto_dispatch = TRUE
+                  AND sent_at IS NULL
+                  AND phone IN (
+                      SELECT phone FROM whatsapp_logs
+                      WHERE type = 'auto_reply' AND status = 'SENT'
+                      GROUP BY phone
+                  )
+            `);
+            if (converted > 0) {
+                console.log(`[Boot] Converted ${converted} stale auto entries to manual (customers with already-sent auto-replies)`);
+            }
+        } catch (cleanupErr) {
+            console.warn('[Boot] Stale entry cleanup failed:', cleanupErr.message);
+        }
 
+        // Queue mismatch check (log-only). Actual reconciliation is triggered
+        // manually via POST /admin/wa/reconcile-queue so the admin controls when
+        // and how entries are created.
+        try {
             const { rows: mismatches } = await db.query(`
                 SELECT c.id, c.nama_lengkap, c.whatsapp,
                        COALESCE(p.cnt, 0)::int AS purchase_count,
@@ -251,23 +273,12 @@ if (process.env.VERCEL) {
                 WHERE c.tipe = 'Belanja'
                   AND COALESCE(p.cnt, 0) > COALESCE(q.cnt, 0)
             `);
-
-            let totalCreated = 0;
-            for (const row of mismatches) {
-                const missing = row.purchase_count - row.queue_count;
-                for (let i = 0; i < missing; i++) {
-                    const result = await whatsappService.enqueueAutoReply(
-                        { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
-                        { autoDispatch: isAutoOn, skipNumberCheck: true }
-                    ).catch(() => null);
-                    if (result && result.success) totalCreated++;
-                }
-            }
-            if (totalCreated > 0) {
-                console.log(`[Boot] Queue reconciled: created ${totalCreated} missing entries (${isAutoOn ? 'auto' : 'manual'}) for ${mismatches.length} customers`);
+            if (mismatches.length > 0) {
+                const totalMissing = mismatches.reduce((s, r) => s + (r.purchase_count - r.queue_count), 0);
+                console.warn(`[Boot] Queue mismatch detected: ${totalMissing} missing entries for ${mismatches.length} customers. Use admin → Reconcile Queue to fix.`);
             }
         } catch (reconcileErr) {
-            console.warn('[Boot] Queue reconciliation failed:', reconcileErr.message);
+            console.warn('[Boot] Queue mismatch check failed:', reconcileErr.message);
         }
 
         // Initialize WA service (HTTP adapter to wa-bridge)
