@@ -1213,6 +1213,8 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     let filteredCustomers = [];
 
     let detailCustomerDraft = null;
+    let detailInfoEditMode = false;
+    let currentDetailCustomer = null;
 
     window.switchCustomerTab = function(tab) {
         activeTab = tab;
@@ -1264,7 +1266,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             <th>Nama</th>
             <th>WhatsApp</th>`;
         if (isBelanja) {
-            html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Metode Pembayaran</th>`;
+            html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Qty</th><th>Metode Pembayaran</th>`;
         } else {
             html += `<th>Catatan</th>`;
         }
@@ -1302,6 +1304,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 html += `<td>${esc(customer.nama_sales || '-')}</td>
                     <td>${produk}</td>
                     <td>${harga}</td>
+                    <td style="text-align:center;">${customer.qty || 1}</td>
                     <td>${esc(customer.metode_pembayaran || '-')}</td>`;
             } else {
                 // Catatan editable for Chat Only — value goes into an attribute, so esc() handles quote/lt/gt
@@ -1493,6 +1496,20 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     });
 
     function showCustomerDetail(customer) {
+        currentDetailCustomer = customer;
+        detailInfoEditMode = false;
+        renderCustomerDetailBody();
+    }
+
+    window.toggleDetailEditMode = function() {
+        detailInfoEditMode = !detailInfoEditMode;
+        renderCustomerDetailBody();
+    }
+
+    function renderCustomerDetailBody() {
+        const customer = currentDetailCustomer;
+        if (!customer) return;
+
         const modal = document.getElementById('customerModal');
         const detail = document.getElementById('customerDetail');
         const formatRpDetail = (val) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(val || 0);
@@ -1502,14 +1519,15 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         const tanggalLahir = customer.tanggal_lahir ? formatTanggal(customer.tanggal_lahir) : '-';
         const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
         const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
-
-        const purchases = customer.purchases || [];
         const purchaseCount = customer.purchase_count || 0;
+        const editing = detailInfoEditMode;
 
-        // Purchase history section — always show if there are purchases
-        let purchaseHtml = '<div id="purchaseEditor"></div>';
+        const statusColors = { 'New': '#D97706', 'Contacted': '#2563EB', 'Follow Up': '#9333EA', 'Completed': '#16A34A', 'Inactive': '#8C8078' };
+        const statusColor = statusColors[customer.status] || '#5C534B';
 
-        detail.innerHTML = `
+        let fieldsHtml;
+        if (editing) {
+            fieldsHtml = `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
                 <div class="detail-group">
                     <div class="detail-label">Nama Lengkap</div>
@@ -1586,9 +1604,91 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 </div>
             </div>
             <div style="margin-top:18px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
-                <button id="detailInfoSaveButton" class="btn-small" onclick="saveCustomerInfo(${customer.id})" style="min-width:160px;">Simpan Perubahan</button>
+                <button id="detailInfoSaveButton" class="btn-small" onclick="saveCustomerInfo(${customer.id})" style="min-width:160px;background:linear-gradient(135deg,#B91C1C,#DC2626);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">Simpan Perubahan</button>
+                <button class="btn-small" onclick="toggleDetailEditMode()" style="padding:10px 18px;border-radius:8px;font-size:13px;">Batal</button>
                 <span id="detailInfoSaveFeedback" style="font-size:13px;color:#16A34A;"></span>
+            </div>`;
+        } else {
+            fieldsHtml = `
+            <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+                <button class="btn-small" onclick="toggleDetailEditMode()" style="background:#EEF2FF;color:#4F46E5;border:1px solid #C7D2FE;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    Edit Info
+                </button>
             </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+                <div class="detail-group">
+                    <div class="detail-label">Nama Lengkap</div>
+                    <div class="detail-value" style="font-size:14px;font-weight:600;color:#1A1412;padding:10px 0;">${esc(customer.nama_lengkap)}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">WhatsApp</div>
+                    <div class="detail-value" style="display:flex;align-items:center;gap:8px;padding:10px 0;">
+                        <span style="font-size:14px;color:#1A1412;">${esc(customer.whatsapp)}</span>
+                        <a href="https://wa.me/${esc(customer.whatsapp)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;background:#25D366;color:#fff;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Chat</a>
+                    </div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tanggal Lahir</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${tanggalLahir}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Alamat</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.alamat || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Produk</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.merk_unit || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tipe</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.tipe_unit || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Harga</div>
+                    <div class="detail-value" style="font-size:14px;font-weight:600;color:#1A1412;padding:10px 0;">${harga}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Qty</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${customer.qty || 1}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Metode Pembayaran</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.metode_pembayaran || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Sales</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.nama_sales || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tahu dari</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${esc(customer.tahu_dari || '-')}</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Source</div>
+                    <div class="detail-value" style="padding:10px 0;"><span class="badge ${sourceClass}">${esc(customer.source || '-')}</span></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Status</div>
+                    <div class="detail-value" style="padding:10px 0;"><span class="badge ${statusClass}" style="color:${statusColor};font-weight:600;">${esc(customer.status || '-')}</span></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Tipe Customer</div>
+                    <div class="detail-value" style="padding:10px 0;"><span style="background:${customer.tipe === 'Chat Only' ? 'rgba(37,99,235,0.1);color:#2563EB' : 'rgba(185,28,28,0.08);color:#B91C1C'};padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600;">${customer.tipe || 'Belanja'}</span></div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Total Pembelian</div>
+                    <div class="detail-value" style="font-weight:600;color:#B91C1C;padding:10px 0;">${purchaseCount}x transaksi</div>
+                </div>
+                <div class="detail-group">
+                    <div class="detail-label">Terdaftar</div>
+                    <div class="detail-value" style="font-size:14px;color:#1A1412;padding:10px 0;">${date}</div>
+                </div>
+            </div>`;
+        }
+
+        detail.innerHTML = `
+            ${fieldsHtml}
             <!-- Status Legend -->
             <div style="margin-top:16px;padding:12px 16px;background:#FAFAF8;border:1px solid #EDE8E3;border-radius:8px;">
                 <div style="font-size:11px;font-weight:600;color:#8C8078;margin-bottom:6px;">KETERANGAN STATUS:</div>
@@ -1892,8 +1992,11 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (!customerRes || !customerRes.success) {
                 throw new Error(customerRes?.message || 'Gagal menyimpan data customer');
             }
-            if (feedback) { feedback.textContent = 'Tersimpan!'; feedback.style.color = '#16A34A'; }
-            closeModal();
+            if (currentDetailCustomer) {
+                Object.assign(currentDetailCustomer, payload);
+            }
+            detailInfoEditMode = false;
+            renderCustomerDetailBody();
             showAdminToast('Info customer berhasil disimpan.', 'success');
             if (typeof loadCustomers === 'function') loadCustomers();
             if (typeof loadFailedWA === 'function') loadFailedWA();
