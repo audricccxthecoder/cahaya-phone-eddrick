@@ -152,6 +152,7 @@ class WAWorker {
         this.autoReplyMsgsSinceBreak = 0;
         this.autoReplyBreakUntil = 0;
         this.nextAutoReplyAllowedAt = 0;
+        this.autoReplyLastQueueDate = null;
 
         // Birthday queue state (separate pacing — never blocks broadcast or auto-reply)
         this.birthdayMsgsSinceBreak = 0;
@@ -225,10 +226,12 @@ class WAWorker {
         if (this.isRunning) return;
         this.isRunning = true;
         this.startedAt = Date.now();
-        // After restart, wait a cooldown before sending anything
+        // After restart, wait a cooldown before sending anything (all queues)
         this.nextBroadcastAllowedAt = this.startedAt + CONFIG.startupCooldownMs;
+        this.nextAutoReplyAllowedAt = this.startedAt + CONFIG.startupCooldownMs;
+        this.nextBirthdayAllowedAt  = this.startedAt + CONFIG.startupCooldownMs;
 
-        console.log(`[WA Worker] Started. Cooldown ${CONFIG.startupCooldownMs / 1000}s before first broadcast.`);
+        console.log(`[WA Worker] Started. Cooldown ${CONFIG.startupCooldownMs / 1000}s before first send (all queues).`);
 
         await this._recoverStaleBroadcast();
 
@@ -268,6 +271,23 @@ class WAWorker {
 
         if (now < this.autoReplyBreakUntil) return;       // in a break
         if (!this._isWorkingHours()) return;              // outside 08-22 WITA
+
+        // Daily warm-up — first auto-reply of the day gets a full profile delay
+        // before sending, so even the very first message has anti-ban spacing.
+        const todayWita = this._todayKeyWITA();
+        if (this.autoReplyLastQueueDate !== todayWita) {
+            this.autoReplyLastQueueDate = todayWita;
+            this.autoReplyMsgsSinceBreak = 0;
+            const profile = this._ensureDailyProfile().autoReply;
+            const jitter = this._randInt(-CONFIG.autoReply.jitterMs, CONFIG.autoReply.jitterMs);
+            const warmupDelay = Math.max(60_000, profile.base + jitter);
+            if (now >= this.nextAutoReplyAllowedAt) {
+                this.nextAutoReplyAllowedAt = Date.now() + warmupDelay;
+            }
+            console.log(`[WA Worker] ✉️ Auto-reply warm-up for ${todayWita} — delay ${Math.round(warmupDelay / 1000)}s before first send`);
+            return;
+        }
+
         if (now < this.nextAutoReplyAllowedAt) return;    // still cooling down
 
         // Bridge readiness check — don't claim a row if bridge can't deliver. The
