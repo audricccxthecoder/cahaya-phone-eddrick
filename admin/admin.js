@@ -1274,7 +1274,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             </tr></thead><tbody>`;
 
         pageData.forEach((customer, index) => {
-            const date = formatTanggal(customerActivityDate(customer));
+            const date = formatTanggal(customer.created_at);
             const sourceClass = String(customer.source || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
             const statusClass = String(customer.status || '').toLowerCase().replace(/[^a-z0-9]+/g,'-');
 
