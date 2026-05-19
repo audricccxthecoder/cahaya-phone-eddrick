@@ -1004,6 +1004,28 @@ exports.updateAdmin = async (req, res) => {
 };
 
 /**
+ * DELETE /api/admin/customers/:id  — delete a customer and all related data (CASCADE)
+ */
+exports.deleteCustomer = async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!id || isNaN(id)) {
+            return res.status(400).json({ success: false, message: 'ID customer tidak valid' });
+        }
+        const { rows } = await db.query('SELECT id, nama_lengkap FROM customers WHERE id = $1', [id]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Customer tidak ditemukan' });
+        }
+        await db.query('DELETE FROM customers WHERE id = $1', [id]);
+        console.log(`🗑️ Customer deleted: ${rows[0].nama_lengkap} (id=${id}) by admin ${req.admin.username}`);
+        res.json({ success: true, message: `Customer "${rows[0].nama_lengkap}" berhasil dihapus` });
+    } catch (error) {
+        console.error('❌ Delete customer error:', error);
+        res.status(500).json({ success: false, message: 'Gagal menghapus customer' });
+    }
+};
+
+/**
  * DELETE /api/admin/admins/:id  — delete admin (owner-only, cannot delete self/owner)
  */
 exports.deleteAdmin = async (req, res) => {

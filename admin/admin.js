@@ -1315,8 +1315,9 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                 <td><span class="badge ${statusClass}">${esc(customer.status)}</span></td>
                 <td style="text-align:center;font-size:18px;">${waIcon}</td>
                 <td>${date}</td>
-                <td><div class="table-actions">
+                <td><div class="table-actions" style="display:flex;gap:4px;">
                     <button class="btn-small" data-cid="${customer.id}" onclick="viewCustomer(${customer.id})" style="cursor:pointer;">Detail</button>
+                    <button class="btn-small" onclick="deleteCustomer(${customer.id}, '${esc(customer.nama_lengkap)}')" style="cursor:pointer;background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;">Hapus</button>
                 </div></td>
             </tr>`;
         });
@@ -1610,10 +1611,14 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             </div>`;
         } else {
             fieldsHtml = `
-            <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
                 <button class="btn-small" onclick="toggleDetailEditMode()" style="background:#EEF2FF;color:#4F46E5;border:1px solid #C7D2FE;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     Edit Info
+                </button>
+                <button class="btn-small" onclick="deleteCustomer(${customer.id}, '${esc(customer.nama_lengkap)}')" style="background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    Hapus
                 </button>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
@@ -1964,6 +1969,25 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             metode_pembayaran: row.querySelector('.purchase-payment')?.value.trim() || item.metode_pembayaran || null,
             source: item.source || ''
         };
+    }
+
+    window.deleteCustomer = async function(customerId, namaLengkap) {
+        if (!customerId) return;
+        if (!confirm(`Yakin ingin menghapus customer "${namaLengkap}"?\n\nSemua data terkait (pembelian, pesan, ucapan ulang tahun) juga akan ikut terhapus.`)) return;
+
+        try {
+            const result = await apiCall(`/admin/customers/${customerId}`, { method: 'DELETE' });
+            if (result && result.success) {
+                showAdminToast(result.message || 'Customer berhasil dihapus.', 'success');
+                closeModal();
+                if (typeof loadCustomers === 'function') loadCustomers();
+            } else {
+                alert(result?.message || 'Gagal menghapus customer');
+            }
+        } catch (error) {
+            console.error('deleteCustomer error:', error);
+            alert('Gagal menghapus customer');
+        }
     }
 
     window.saveCustomerInfo = async function(customerId) {

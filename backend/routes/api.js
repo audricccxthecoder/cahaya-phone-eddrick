@@ -130,6 +130,7 @@ router.patch('/admin/customers/:id/catatan', authMiddleware, auditLog('update_cu
 router.patch('/admin/customers/:id', authMiddleware, auditLog('update_customer'), adminController.updateCustomer);
 router.put('/admin/customers/:id/purchases', authMiddleware, auditLog('update_customer_purchases'), adminController.saveCustomerPurchases);
 router.get('/admin/customers/:id', authMiddleware, adminController.getCustomerById);
+router.delete('/admin/customers/:id', authMiddleware, auditLog('delete_customer'), adminController.deleteCustomer);
 
 // Messages
 router.get('/admin/messages', authMiddleware, adminController.getMessages);
