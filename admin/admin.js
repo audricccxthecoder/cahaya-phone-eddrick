@@ -1266,11 +1266,12 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             <th>Nama</th>
             <th>WhatsApp</th>`;
         if (isBelanja) {
-            html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Qty</th><th>Metode Pembayaran</th>`;
+            html += `<th>Sales</th><th>Produk</th><th>Harga</th><th>Qty</th><th>Metode Pembayaran</th>
+            <th>Source</th><th>Status</th><th>WA</th>`;
         } else {
             html += `<th>Catatan</th>`;
         }
-        html += `<th>Source</th><th>Status</th><th>WA</th><th>Tanggal</th><th>Aksi</th>
+        html += `<th>Tanggal</th><th>Aksi</th>
             </tr></thead><tbody>`;
 
         pageData.forEach((customer, index) => {
@@ -1297,8 +1298,6 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             if (isBelanja) {
                 const produk = customer.merk_unit && customer.tipe_unit
                     ? `${esc(customer.merk_unit)} ${esc(customer.tipe_unit)}` : '-';
-                // List view shows the LATEST purchase price only. Full purchase history
-                // and total-spent live on the detail page (clicking "Detail").
                 const harga = customer.harga
                     ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(customer.harga) : '-';
                 html += `<td>${esc(customer.nama_sales || '-')}</td>
@@ -1306,15 +1305,17 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
                     <td>${harga}</td>
                     <td style="text-align:center;">${customer.qty || 1}</td>
                     <td>${esc(customer.metode_pembayaran || '-')}</td>`;
+                html += `<td><span class="badge ${sourceClass}">${esc(customer.source)}</span></td>
+                    <td><span class="badge ${statusClass}">${esc(customer.status)}</span></td>
+                    <td style="text-align:center;font-size:18px;">${waIcon}</td>`;
             } else {
-                // Catatan editable for Chat Only — value goes into an attribute, so esc() handles quote/lt/gt
-                html += `<td><input type="text" value="${esc(customer.catatan || '')}" placeholder="Tulis catatan..." style="border:1px solid #EDE8E3;padding:6px 10px;border-radius:6px;font-size:13px;width:100%;min-width:180px;background:#FAFAF8;" onblur="saveCatatan(${customer.id}, this.value)" onkeydown="if(event.key==='Enter'){this.blur();}"></td>`;
+                html += `<td><div style="display:flex;align-items:center;gap:6px;">
+                    <input type="text" id="catatan_${customer.id}" value="${esc(customer.catatan || '')}" placeholder="Tulis catatan..." style="border:1px solid #EDE8E3;padding:6px 10px;border-radius:6px;font-size:13px;flex:1;min-width:160px;background:#FAFAF8;" onkeydown="if(event.key==='Enter'){saveCatatan(${customer.id}, this.value);}">
+                    <button class="btn-small" onclick="saveCatatan(${customer.id}, document.getElementById('catatan_${customer.id}').value)" style="padding:5px 10px;font-size:11px;white-space:nowrap;background:#DCFCE7;color:#16A34A;border:1px solid #BBF7D0;cursor:pointer;">Save</button>
+                </div></td>`;
             }
 
-            html += `<td><span class="badge ${sourceClass}">${esc(customer.source)}</span></td>
-                <td><span class="badge ${statusClass}">${esc(customer.status)}</span></td>
-                <td style="text-align:center;font-size:18px;">${waIcon}</td>
-                <td>${date}</td>
+            html += `<td>${date}</td>
                 <td><div class="table-actions" style="display:flex;gap:4px;">
                     <button class="btn-small" data-cid="${customer.id}" onclick="viewCustomer(${customer.id})" style="cursor:pointer;">Detail</button>
                     <button class="btn-small" onclick="deleteCustomer(${customer.id}, '${esc(customer.nama_lengkap)}')" style="cursor:pointer;background:#FEF2F2;color:#DC2626;border:1px solid #FECACA;">Hapus</button>
@@ -2116,6 +2117,7 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         if (res && res.success) {
             const c = allCustomers.find(c => c.id === customerId);
             if (c) c.catatan = value;
+            showAdminToast('Catatan tersimpan', 'success');
         }
     };
 
