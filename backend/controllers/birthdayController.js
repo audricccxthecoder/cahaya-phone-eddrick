@@ -467,6 +467,8 @@ async function sendBirthdayMessage(customerId) {
  * Pengiriman sebenarnya dilakukan oleh wa-worker._processBirthdayQueue()
  * yang berjalan setiap 15 detik — ini mencegah double-send antara cron dan worker.
  */
+exports.enqueueTodayBirthdays = enqueueTodayBirthdays;
+
 exports.cronCheckBirthdays = async function() {
     console.log('[Birthday] 🎂 Cron enqueue started...');
     try {

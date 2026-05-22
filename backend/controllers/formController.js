@@ -164,13 +164,23 @@ exports.submitForm = async (req, res) => {
 
         const customerId = rows[0].id;
 
+        // Snapshot toggle state sekarang — disimpan ke purchase agar boot reconcile
+        // tahu auto_dispatch yang benar kalau enqueue gagal (crash/error).
+        const { rows: toggleSetting } = await db.query(
+            `SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`
+        );
+        const autoReplyEnabled = toggleSetting.length === 0 || toggleSetting[0].value !== 'false';
+
         // Record purchase in purchases history table
+        let purchaseId = null;
         if (parsedHarga || cleanMerk || cleanTipe) {
-            await db.query(
-                `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [customerId, cleanMerk, cleanTipe, parsedHarga, parsedQty, nama_sales || null, metode_pembayaran || null, source]
+            const { rows: pRows } = await db.query(
+                `INSERT INTO purchases (customer_id, merk_unit, tipe_unit, harga, qty, nama_sales, metode_pembayaran, source, wa_auto_dispatch, wa_enqueued)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+                 RETURNING id`,
+                [customerId, cleanMerk, cleanTipe, parsedHarga, parsedQty, nama_sales || null, metode_pembayaran || null, source, autoReplyEnabled]
             );
+            purchaseId = pRows[0].id;
         }
 
         await db.query(
@@ -186,17 +196,10 @@ exports.submitForm = async (req, res) => {
         });
 
         // Background: enqueue WA auto-reply (tidak blocking response).
-        // Toggle ON → auto_dispatch=TRUE, worker kirim otomatis dengan pacing.
-        // Toggle OFF → auto_dispatch=FALSE, baru terkirim setelah admin klik manual.
-        // Toggle state di-snapshot saat enqueue, jadi flip toggle setelah submit
-        // tidak ngubah perilaku row yang sudah masuk queue.
+        // Toggle state sudah di-snapshot ke purchases.wa_auto_dispatch di atas,
+        // jadi kalau crash sebelum enqueue, boot reconcile tahu harus pakai nilai apa.
         (async () => {
             try {
-                const { rows: setting } = await db.query(
-                    `SELECT value FROM app_settings WHERE key = 'form_autoreply_enabled'`
-                );
-                const autoReplyEnabled = setting.length === 0 || setting[0].value !== 'false';
-
                 console.log(`[Form] Enqueue auto-reply for ${cleanPhone}: toggle=${autoReplyEnabled ? 'ON' : 'OFF'} → auto_dispatch=${autoReplyEnabled}`);
                 const waResult = await whatsappService.enqueueAutoReply(
                     { nama_lengkap: finalName, whatsapp: cleanPhone },
@@ -213,17 +216,16 @@ exports.submitForm = async (req, res) => {
                         [customerId]
                     ).catch(() => {});
                 } else {
+                    if (purchaseId) {
+                        await db.query('UPDATE purchases SET wa_enqueued = TRUE WHERE id = $1', [purchaseId]).catch(() => {});
+                    }
                     await db.query(
                         'UPDATE customers SET wa_sent = FALSE WHERE id = $1 AND wa_sent IS NOT TRUE',
                         [customerId]
                     ).catch(() => {});
                 }
-
-                // wa_sent stays false until worker (or manual click) actually sends.
-                // Leave status as-is for Belanja customers, since purchase data is already completed.
             } catch (waError) {
                 console.warn('⚠️ WhatsApp auto-reply enqueue failed:', waError.message || waError);
-                // Do not overwrite customer status on WA enqueue failure.
             }
         })();
 

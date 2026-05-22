@@ -206,6 +206,11 @@ if (process.env.VERCEL) {
             }
         } catch (_) {}
         try {
+            await db.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS wa_auto_dispatch BOOLEAN DEFAULT NULL`);
+            await db.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS wa_enqueued BOOLEAN DEFAULT FALSE`);
+            await db.query(`UPDATE purchases SET wa_enqueued = TRUE WHERE wa_enqueued IS NULL OR wa_auto_dispatch IS NULL`);
+        } catch (_) {}
+        try {
             await db.query(`
                 CREATE OR REPLACE VIEW customer_purchases_detail AS
                 SELECT p.id AS purchase_id, p.customer_id,
@@ -267,26 +272,49 @@ if (process.env.VERCEL) {
             console.warn('[Boot] Stale entry cleanup failed:', cleanupErr.message);
         }
 
-        // Queue mismatch check (log-only). Actual reconciliation is triggered
-        // manually via POST /admin/wa/reconcile-queue so the admin controls when
-        // and how entries are created.
+        // Auto-reconcile: create missing auto-reply queue entries on boot.
+        // Reads wa_auto_dispatch from purchases (snapshot of toggle at submit time).
         try {
-            const { rows: mismatches } = await db.query(`
-                SELECT c.id, c.nama_lengkap, c.whatsapp,
-                       COALESCE(p.cnt, 0)::int AS purchase_count,
-                       COALESCE(q.cnt, 0)::int AS queue_count
-                FROM customers c
-                LEFT JOIN (SELECT customer_id, COUNT(*) AS cnt FROM purchases GROUP BY customer_id) p ON p.customer_id = c.id
-                LEFT JOIN (SELECT phone, COUNT(*) AS cnt FROM whatsapp_logs WHERE type = 'auto_reply' GROUP BY phone) q ON q.phone = c.whatsapp
+            const whatsappSvc = require('./config/whatsapp');
+
+            const { rows: pending } = await db.query(`
+                SELECT p.id AS purchase_id, p.wa_auto_dispatch,
+                       c.nama_lengkap, c.whatsapp
+                FROM purchases p
+                JOIN customers c ON c.id = p.customer_id
                 WHERE c.tipe = 'Belanja'
-                  AND COALESCE(p.cnt, 0) > COALESCE(q.cnt, 0)
+                  AND p.wa_enqueued = FALSE
+                  AND p.wa_auto_dispatch IS NOT NULL
+                ORDER BY p.created_at
             `);
-            if (mismatches.length > 0) {
-                const totalMissing = mismatches.reduce((s, r) => s + (r.purchase_count - r.queue_count), 0);
-                console.warn(`[Boot] Queue mismatch detected: ${totalMissing} missing entries for ${mismatches.length} customers. Use admin → Reconcile Queue to fix.`);
+
+            let totalCreated = 0;
+            for (const row of pending) {
+                const result = await whatsappSvc.enqueueAutoReply(
+                    { nama_lengkap: row.nama_lengkap, whatsapp: row.whatsapp },
+                    { autoDispatch: row.wa_auto_dispatch, skipNumberCheck: true }
+                ).catch(() => ({ success: false }));
+                if (result && result.success) {
+                    await db.query('UPDATE purchases SET wa_enqueued = TRUE WHERE id = $1', [row.purchase_id]).catch(() => {});
+                    totalCreated++;
+                }
+            }
+            if (totalCreated > 0) {
+                console.log(`[Boot] Auto-reconcile: enqueued ${totalCreated} pending auto-reply entries`);
             }
         } catch (reconcileErr) {
-            console.warn('[Boot] Queue mismatch check failed:', reconcileErr.message);
+            console.warn('[Boot] Auto-reply reconcile failed:', reconcileErr.message);
+        }
+
+        // Auto-reconcile: enqueue missing birthday greetings for today.
+        try {
+            const birthdayController = require('./controllers/birthdayController');
+            if (typeof birthdayController.enqueueTodayBirthdays === 'function') {
+                await birthdayController.enqueueTodayBirthdays();
+                console.log('[Boot] Birthday queue reconciled for today');
+            }
+        } catch (bdayErr) {
+            console.warn('[Boot] Birthday reconcile failed:', bdayErr.message);
         }
 
         // Initialize WA service (HTTP adapter to wa-bridge)

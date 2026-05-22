@@ -116,6 +116,9 @@
       await client.query(`CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases (created_at)`);
       console.log('✅ Table purchases created/verified');
 
+      await client.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS wa_auto_dispatch BOOLEAN DEFAULT NULL`);
+      await client.query(`ALTER TABLE purchases ADD COLUMN IF NOT EXISTS wa_enqueued BOOLEAN DEFAULT FALSE`);
+
       // Buat tabel invoices (nota digital)
       console.log('Creating table: invoices...');
       await client.query(`
