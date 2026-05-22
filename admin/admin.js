@@ -3702,18 +3702,21 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
             const connectBtn = document.getElementById('googleConnectBtn');
             const disconnectBtn = document.getElementById('googleDisconnectBtn');
 
+            const resyncBtn = document.getElementById('googleResyncBtn');
             if (data.connected) {
                 indicator.style.background = '#16A34A';
                 statusText.textContent = 'Terhubung — kontak customer otomatis tersimpan ke Google Contacts';
                 statusText.style.color = '#16A34A';
                 connectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'inline-block';
+                if (resyncBtn) resyncBtn.style.display = 'inline-block';
             } else {
                 indicator.style.background = '#DC2626';
                 statusText.textContent = 'Belum terhubung';
                 statusText.style.color = '#DC2626';
                 connectBtn.style.display = 'inline-block';
                 disconnectBtn.style.display = 'none';
+                if (resyncBtn) resyncBtn.style.display = 'none';
             }
         } catch (err) {
             console.warn('Google status check failed:', err);
@@ -3746,6 +3749,26 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
         } catch (err) {
             alert('Gagal memutuskan: ' + err.message);
         }
+    };
+
+    window.resyncGoogleContacts = async function() {
+        if (!confirm('Re-sync semua kontak customer ke Google Contacts? Proses ini bisa memakan waktu beberapa menit.')) return;
+        const resultDiv = document.getElementById('googleResyncResult');
+        const btn = document.getElementById('googleResyncBtn');
+        btn.disabled = true;
+        btn.textContent = 'Syncing...';
+        resultDiv.style.display = 'block';
+        resultDiv.textContent = 'Sedang proses re-sync, mohon tunggu...';
+        try {
+            const data = await apiCall('/google/resync', { method: 'POST' });
+            resultDiv.innerHTML = `Selesai: <b>${data.saved}</b> tersimpan, <b>${data.skipped}</b> dilewati, <b>${data.failed}</b> gagal (total ${data.total} customer)`;
+            resultDiv.style.color = data.failed > 0 ? '#DC2626' : '#16a34a';
+        } catch (err) {
+            resultDiv.textContent = 'Gagal re-sync: ' + err.message;
+            resultDiv.style.color = '#DC2626';
+        }
+        btn.disabled = false;
+        btn.textContent = 'Re-sync Kontak';
     };
 
     // Check for Google OAuth redirect result
