@@ -232,6 +232,10 @@
       console.log('Ensuring wa_sent column...');
       await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS wa_sent BOOLEAN DEFAULT NULL`);
 
+      // Ensure google_contact_synced column exists
+      console.log('Ensuring google_contact_synced column...');
+      await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS google_contact_synced BOOLEAN DEFAULT FALSE`);
+
       // Migrate old status values to new system
       console.log('Migrating status values...');
       await client.query(`UPDATE customers SET status = 'Contacted' WHERE status = 'Existing'`);

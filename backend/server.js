@@ -198,6 +198,14 @@ if (process.env.VERCEL) {
         // without manually JOINing. Cheap to recreate on every boot.
         const db = require('./config/database');
         try {
+            const col = await db.query(`SELECT 1 FROM information_schema.columns WHERE table_name='customers' AND column_name='google_contact_synced'`);
+            if (col.rows.length === 0) {
+                await db.query(`ALTER TABLE customers ADD COLUMN google_contact_synced BOOLEAN DEFAULT FALSE`);
+                await db.query(`UPDATE customers SET google_contact_synced = TRUE`);
+                console.log('[Boot] Added google_contact_synced column, marked all existing customers as synced');
+            }
+        } catch (_) {}
+        try {
             await db.query(`
                 CREATE OR REPLACE VIEW customer_purchases_detail AS
                 SELECT p.id AS purchase_id, p.customer_id,

@@ -83,6 +83,7 @@ exports.resync = async (req, res) => {
                        ROW_NUMBER() OVER (PARTITION BY c.id ORDER BY p.created_at DESC) AS rn
                 FROM customers c
                 LEFT JOIN purchases p ON p.customer_id = c.id
+                WHERE c.google_contact_synced = FALSE OR c.google_contact_synced IS NULL
             ) sub
             WHERE rn = 1
             ORDER BY id
@@ -90,6 +91,7 @@ exports.resync = async (req, res) => {
 
         let saved = 0, skipped = 0, failed = 0;
         const errors = [];
+        const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
         for (const c of customers) {
             try {
@@ -103,6 +105,7 @@ exports.resync = async (req, res) => {
                 failed++;
                 errors.push({ id: c.id, nama: c.nama_lengkap, error: err.message });
             }
+            await delay(1500);
         }
 
         console.log(`[Re-sync] Done: ${saved} saved, ${skipped} skipped, ${failed} failed out of ${customers.length} customers`);

@@ -250,6 +250,7 @@ class GoogleContactsService {
                         requestBody: updateBody
                     });
                     console.log(`✅ Google Contact updated: ${contactName}`);
+                    await this._markSynced(phone);
                     return { success: true, resourceName: result.data.resourceName, action: 'updated' };
                 }
 
@@ -261,6 +262,7 @@ class GoogleContactsService {
                     requestBody: updateBody
                 });
                 console.log(`ℹ️ Google Contact preserved name (${existingName}); biography updated`);
+                await this._markSynced(phone);
                 return { success: true, resourceName: result.data.resourceName, action: 'preserved' };
             } else {
                 // Create new contact
@@ -268,6 +270,7 @@ class GoogleContactsService {
                     requestBody: contactData
                 });
                 console.log(`✅ Google Contact created: ${contactName}`);
+                await this._markSynced(phone);
                 return { success: true, resourceName: result.data.resourceName, action: 'created' };
             }
 
@@ -276,6 +279,11 @@ class GoogleContactsService {
             console.error('❌ Full error:', JSON.stringify(error.response?.data || error.errors || error.message));
             return { success: false, error: error.message };
         }
+    }
+
+    async _markSynced(phone) {
+        const cleanPhone = phone.replace(/^\+/, '');
+        await db.query('UPDATE customers SET google_contact_synced = TRUE WHERE whatsapp = $1', [cleanPhone]).catch(() => {});
     }
 
     async disconnect() {
