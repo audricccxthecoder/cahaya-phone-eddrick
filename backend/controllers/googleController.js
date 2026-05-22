@@ -4,6 +4,7 @@
 // ============================================
 
 const googleService = require('../config/google');
+const db = require('../config/database');
 
 /**
  * GET /api/google/auth — Redirect to Google OAuth
@@ -60,6 +61,62 @@ exports.status = async (req, res) => {
         res.json({ success: true, connected });
     } catch (error) {
         res.json({ success: true, connected: false });
+    }
+};
+
+/**
+ * POST /api/google/resync — Re-sync customers to Google Contacts
+ */
+exports.resync = async (req, res) => {
+    try {
+        const connected = await googleService.isConnected();
+        if (!connected) {
+            return res.status(400).json({ success: false, error: 'Google Contacts not connected. Please authenticate first via /api/google/auth' });
+        }
+
+        const { rows: customers } = await db.query(`
+            SELECT id, nama_lengkap, whatsapp, alamat, tipe, source,
+                   merk_unit, tipe_unit, metode_pembayaran
+            FROM (
+                SELECT c.id, c.nama_lengkap, c.whatsapp, c.alamat, c.tipe, c.source,
+                       p.merk_unit, p.tipe_unit, p.metode_pembayaran,
+                       ROW_NUMBER() OVER (PARTITION BY c.id ORDER BY p.created_at DESC) AS rn
+                FROM customers c
+                LEFT JOIN purchases p ON p.customer_id = c.id
+            ) sub
+            WHERE rn = 1
+            ORDER BY id
+        `);
+
+        let saved = 0, skipped = 0, failed = 0;
+        const errors = [];
+
+        for (const c of customers) {
+            try {
+                const result = await googleService.saveContact(c);
+                if (result.success) {
+                    saved++;
+                } else {
+                    skipped++;
+                }
+            } catch (err) {
+                failed++;
+                errors.push({ id: c.id, nama: c.nama_lengkap, error: err.message });
+            }
+        }
+
+        console.log(`[Re-sync] Done: ${saved} saved, ${skipped} skipped, ${failed} failed out of ${customers.length} customers`);
+        res.json({
+            success: true,
+            total: customers.length,
+            saved,
+            skipped,
+            failed,
+            errors: errors.slice(0, 20)
+        });
+    } catch (error) {
+        console.error('❌ Google re-sync error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 };
 

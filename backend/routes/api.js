@@ -85,6 +85,7 @@ router.get('/google/auth', googleController.authorize);
 router.get('/google/callback', googleController.callback);
 router.get('/google/status', authMiddleware, googleController.status);
 router.post('/google/disconnect', authMiddleware, googleController.disconnect);
+router.post('/google/resync', authMiddleware, googleController.resync);
 
 // Admin login (rate limited)
 router.post('/admin/login', loginLimiter, adminController.login);

@@ -196,8 +196,8 @@ if (process.env.VERCEL) {
         // Ensure helper views exist (idempotent — DROP IF EXISTS + CREATE). These
         // make customer purchase data browsable directly in Supabase Table Editor
         // without manually JOINing. Cheap to recreate on every boot.
+        const db = require('./config/database');
         try {
-            const db = require('./config/database');
             await db.query(`
                 CREATE OR REPLACE VIEW customer_purchases_detail AS
                 SELECT p.id AS purchase_id, p.customer_id,
