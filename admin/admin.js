@@ -3752,17 +3752,22 @@ if (window.location.pathname.includes('dashboard') || window.location.pathname.i
     };
 
     window.resyncGoogleContacts = async function() {
-        if (!confirm('Re-sync semua kontak customer ke Google Contacts? Proses ini bisa memakan waktu beberapa menit.')) return;
+        if (!confirm('Simpan ulang kontak customer yang gagal tersimpan ke Google Contacts? (hanya yang pending/gagal)')) return;
         const resultDiv = document.getElementById('googleResyncResult');
         const btn = document.getElementById('googleResyncBtn');
         btn.disabled = true;
         btn.textContent = 'Syncing...';
         resultDiv.style.display = 'block';
-        resultDiv.textContent = 'Sedang proses re-sync, mohon tunggu...';
+        resultDiv.textContent = 'Memproses kontak yang gagal tersimpan, mohon tunggu...';
         try {
             const data = await apiCall('/google/resync', { method: 'POST' });
-            resultDiv.innerHTML = `Selesai: <b>${data.saved}</b> tersimpan, <b>${data.skipped}</b> dilewati, <b>${data.failed}</b> gagal (total ${data.total} customer)`;
-            resultDiv.style.color = data.failed > 0 ? '#DC2626' : '#16a34a';
+            if (data.total === 0) {
+                resultDiv.innerHTML = 'Tidak ada kontak yang pending — semua sudah tersimpan di Google Contacts.';
+                resultDiv.style.color = '#16a34a';
+            } else {
+                resultDiv.innerHTML = `Selesai: <b>${data.saved}</b> tersimpan, <b>${data.failed}</b> gagal dari <b>${data.total}</b> kontak pending`;
+                resultDiv.style.color = data.failed > 0 ? '#DC2626' : '#16a34a';
+            }
         } catch (err) {
             resultDiv.textContent = 'Gagal re-sync: ' + err.message;
             resultDiv.style.color = '#DC2626';
